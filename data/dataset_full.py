@@ -65,7 +65,7 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     
     return pts_mid, pts_left, pts_right
 
-def gaussian_contour_plot(rgb_image, gaze_points, sigma=1.0, cam_dir='mid', contour_levels=3):
+def gaussian_contour_plot(rgb_image, gaze_points, sigma=10.0, contour_levels=3):
     # Create a grid of coordinates
     height, width = rgb_image.shape[:2]
     y, x = np.mgrid[0:height, 0:width]
@@ -91,19 +91,10 @@ def gaussian_contour_plot(rgb_image, gaze_points, sigma=1.0, cam_dir='mid', cont
     plt.savefig(buffer, format='png', bbox_inches='tight', pad_inches=0)
     plt.close()
     buffer.seek(0)
-    # Open the image using PIL
     heatmap_image = Image.open(buffer)
     
     return heatmap_image
-    # if os.path.exists("gaze_heatmap/%s" % fname) is False:
-    #     os.makedirs("gaze_heatmap/%s" % fname)
-    
-    # if os.path.exists("gaze_heatmap/%s/%s" % (fname, cam_dir)) is False:
-    #     os.makedirs("gaze_heatmap/%s/%s" % (fname, cam_dir))
-        
-    # output_file_name_heat = "gaze_heatmap/%s/%s/%s.jpg" % (fname, cam_dir, str(frame_num))
-    # plt.savefig(output_file_name_heat)
-    # plt.clf()
+
 
 def frame_filter(frame_num, awareness_df):
      ego_vel = awareness_df["EgoVariables_VehicleVel"][frame_num-1]
@@ -115,13 +106,15 @@ def frame_filter(frame_num, awareness_df):
 
 
 class SituationalAwarenessDataset(Dataset):
-    def __init__(self, recording_path, images_dir, awareness_df, sensor_config, num_gaze_points=16):
+    def __init__(self, recording_path, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
         self.recording_path = Path(recording_path)
         self.images_dir = Path(images_dir)
         self.sensor_config = configparser.ConfigParser()
         self.sensor_config.read(sensor_config)
         self.awareness_df = awareness_df
-        self.num_gaze_points = num_gaze_points
+        self.secs_of_history = secs_of_history 
+        self.sample_rate = sample_rate
+        self.gaussian_sigma = gaussian_sigma
     
     def __getitem__(self, frame_num):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
@@ -142,24 +135,73 @@ class SituationalAwarenessDataset(Dataset):
         raw_gaze_right = []
         
         current_time = self.awareness_df["TimeElapsed"][frame_num]
-        end_time = current_time - 4.0
+        end_time = current_time - self.secs_of_history
+        history_frames = []
+        history_frame_times = []
         i = 0
         frame = frame_num - i - 1
-        while self.awareness_df["TimeElapsed"][frame] > end_time:
-            focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][frame])
-            loc = self.awareness_df["EgoVariables_VehicleLoc"][frame]
+        while frame > 0 and self.awareness_df["TimeElapsed"][frame] > end_time:
+            history_frames.append(frame)
+            history_frame_times.append(self.awareness_df["TimeElapsed"][frame])
+            frame = frame_num - i - 1
+            i+=1
+        
+        total_history_frames = self.secs_of_history*self.sample_rate
+        frame_time = 1/self.sample_rate
+        step = 0
+
+        frame = frame_num - 1
+        while frame > 0 and step != total_history_frames:
+
+            target_time = self.awareness_df["TimeElapsed"][frame] - frame_time*step
+            closest_frame_idx = np.argmin(abs(history_frame_times-target_time))
+            closest_frame = history_frames[closest_frame_idx]
+            step += 1
+
+            focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][closest_frame])
+            loc = self.awareness_df["EgoVariables_VehicleLoc"][closest_frame]
             loc = np.asarray([loc[0], loc[1], loc[2]])
-            rot = self.awareness_df["EgoVariables_VehicleRot"][frame]
+            rot = self.awareness_df["EgoVariables_VehicleRot"][closest_frame]
             rot = np.asarray([rot[0], rot[1], rot[2]])
             pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
             raw_gaze_mid.append(pts_mid)
             raw_gaze_left.append(pts_left)
             raw_gaze_right.append(pts_right)
-            i+=1
-            frame = frame_num - i - 1
-        gaze_heatmap = gaussian_contour_plot(np.array(rgb_image), raw_gaze_mid, sigma=5.0, cam_dir='mid', contour_levels=3)
-        gaze_heatmap_left = gaussian_contour_plot(np.array(rgb_left_image), raw_gaze_left, sigma=5.0, cam_dir='left', contour_levels=3)
-        gaze_heatmap_right = gaussian_contour_plot(np.array(rgb_right_image), raw_gaze_right, sigma=5.0, cam_dir='right', contour_levels=3)
+        
+        #get all frame numbers in window
+        # while frame > 0 and self.awareness_df["TimeElapsed"][frame] > end_time:
+        #     history_frames.append(frame)
+        #     i+=1
+        #     frame = frame_num - i - 1
+        # step = int(len(history_frames)/total_history_frames)
+        
+        # for i in range(0, len(history_frames), step):
+        #     current_frame = history_frames[i]
+        #     focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][current_frame])
+        #     loc = self.awareness_df["EgoVariables_VehicleLoc"][current_frame]
+        #     loc = np.asarray([loc[0], loc[1], loc[2]])
+        #     rot = self.awareness_df["EgoVariables_VehicleRot"][current_frame]
+        #     rot = np.asarray([rot[0], rot[1], rot[2]])
+        #     pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
+        #     raw_gaze_mid.append(pts_mid)
+        #     raw_gaze_left.append(pts_left)
+        #     raw_gaze_right.append(pts_right)
+        
+        # while self.awareness_df["TimeElapsed"][frame] > end_time:
+        #     focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][frame])
+        #     loc = self.awareness_df["EgoVariables_VehicleLoc"][frame]
+        #     loc = np.asarray([loc[0], loc[1], loc[2]])
+        #     rot = self.awareness_df["EgoVariables_VehicleRot"][frame]
+        #     rot = np.asarray([rot[0], rot[1], rot[2]])
+        #     pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
+        #     raw_gaze_mid.append(pts_mid)
+        #     raw_gaze_left.append(pts_left)
+        #     raw_gaze_right.append(pts_right)
+        #     i+=1
+        #     frame = frame_num - i - 1
+        gaze_heatmap = gaussian_contour_plot(np.array(rgb_image), raw_gaze_mid, sigma=self.gaussian_sigma , contour_levels=3)
+        gaze_heatmap_left = gaussian_contour_plot(np.array(rgb_left_image), raw_gaze_left, sigma=self.gaussian_sigma , contour_levels=3)
+        gaze_heatmap_right = gaussian_contour_plot(np.array(rgb_right_image), raw_gaze_right, sigma=self.gaussian_sigma , contour_levels=3)
         
         validity = frame_filter(frame_num, self.awareness_df)
 
@@ -172,15 +214,10 @@ class SituationalAwarenessDataset(Dataset):
         F = w / (2 * np.tan(FOV * np.pi / 360))
 
         cam_info = {
-            'F': F,
-            'map_size' : 256,
-            'pixels_per_world' : 5.5,
             'w' : w,
             'h' : h,
             'fy' : F,
             'fx' : 1.0 * F,
-            'hack' : 0.4,
-            'cam_height' : self.sensor_config['rgb']['z'],
         }
 
         K = np.array([
@@ -188,7 +225,7 @@ class SituationalAwarenessDataset(Dataset):
         [0, cam_info['fy'], cam_info['h']/2],
         [0, 0, 1]])
         
-        focus_hit_pt_scaled = np.array(focus_hit_pt.squeeze())/100
+        focus_hit_pt_scaled = np.array(focus_hit_pt.squeeze())/100 # conversion cm to m 
         vehicle_loc = carla.Location(*(loc.squeeze()))/100
         vehicle_rot = carla.Rotation(*(rot.squeeze()))
         vehicle_transform = carla.Transform(location=vehicle_loc, rotation=vehicle_rot)
