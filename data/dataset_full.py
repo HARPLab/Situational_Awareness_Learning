@@ -106,8 +106,7 @@ def frame_filter(frame_num, awareness_df):
 
 
 class SituationalAwarenessDataset(Dataset):
-    def __init__(self, recording_path, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
-        self.recording_path = Path(recording_path)
+    def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
         self.images_dir = Path(images_dir)
         self.sensor_config = configparser.ConfigParser()
         self.sensor_config.read(sensor_config)
@@ -127,7 +126,7 @@ class SituationalAwarenessDataset(Dataset):
         instance_seg_left_image = Image.open(self.images_dir / 'instance_segmentation_output_left' / ('%.6d.png' % frame_num))
         instance_seg_right_image = Image.open(self.images_dir / 'instance_segmentation_output_right' / ('%.6d.png' % frame_num))
 
-        #label_mask_image = Image.open(self.images_dir / 'label_masks' / ('%.6d_%d.png' % (frame_num, id)))
+        label_mask_image = Image.open(self.images_dir / 'full_label_masks' / ('%.6d.png' % (frame_num)))
 
         # Construct gaze heatmap
         raw_gaze_mid= []
@@ -167,45 +166,13 @@ class SituationalAwarenessDataset(Dataset):
             raw_gaze_mid.append(pts_mid)
             raw_gaze_left.append(pts_left)
             raw_gaze_right.append(pts_right)
-        
-        #get all frame numbers in window
-        # while frame > 0 and self.awareness_df["TimeElapsed"][frame] > end_time:
-        #     history_frames.append(frame)
-        #     i+=1
-        #     frame = frame_num - i - 1
-        # step = int(len(history_frames)/total_history_frames)
-        
-        # for i in range(0, len(history_frames), step):
-        #     current_frame = history_frames[i]
-        #     focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][current_frame])
-        #     loc = self.awareness_df["EgoVariables_VehicleLoc"][current_frame]
-        #     loc = np.asarray([loc[0], loc[1], loc[2]])
-        #     rot = self.awareness_df["EgoVariables_VehicleRot"][current_frame]
-        #     rot = np.asarray([rot[0], rot[1], rot[2]])
-        #     pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
-        #     raw_gaze_mid.append(pts_mid)
-        #     raw_gaze_left.append(pts_left)
-        #     raw_gaze_right.append(pts_right)
-        
-        # while self.awareness_df["TimeElapsed"][frame] > end_time:
-        #     focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][frame])
-        #     loc = self.awareness_df["EgoVariables_VehicleLoc"][frame]
-        #     loc = np.asarray([loc[0], loc[1], loc[2]])
-        #     rot = self.awareness_df["EgoVariables_VehicleRot"][frame]
-        #     rot = np.asarray([rot[0], rot[1], rot[2]])
-        #     pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
-        #     raw_gaze_mid.append(pts_mid)
-        #     raw_gaze_left.append(pts_left)
-        #     raw_gaze_right.append(pts_right)
-        #     i+=1
-        #     frame = frame_num - i - 1
         gaze_heatmap = gaussian_contour_plot(np.array(rgb_image), raw_gaze_mid, sigma=self.gaussian_sigma , contour_levels=3)
         gaze_heatmap_left = gaussian_contour_plot(np.array(rgb_left_image), raw_gaze_left, sigma=self.gaussian_sigma , contour_levels=3)
         gaze_heatmap_right = gaussian_contour_plot(np.array(rgb_right_image), raw_gaze_right, sigma=self.gaussian_sigma , contour_levels=3)
         
         validity = frame_filter(frame_num, self.awareness_df)
 
-        return rgb_image, instance_seg_image, gaze_heatmap, rgb_left_image, instance_seg_left_image, gaze_heatmap_left, rgb_right_image, instance_seg_right_image, gaze_heatmap_right, gaze_heatmap, validity
+        return rgb_image, instance_seg_image, gaze_heatmap, rgb_left_image, instance_seg_left_image, gaze_heatmap_left, rgb_right_image, instance_seg_right_image, gaze_heatmap_right, label_mask_image, validity
     
     def get_gaze_point(self, focus_hit_pt, loc, rot):
         FOV = int(self.sensor_config['rgb']['fov'])
