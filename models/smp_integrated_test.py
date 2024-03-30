@@ -30,6 +30,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import pandas as pd
 import matplotlib.pyplot as plt
+import data
 from data.dataset_full import SituationalAwarenessDataset
     
 
@@ -46,26 +47,47 @@ def visualize(**images):
         plt.imshow(image)
     plt.show()
 
+def visualize_all(**images):
+    fig, axs = plt.subplots(4, 3, figsize=(10, 10))
+    axs = axs.flatten()
+    
+    for i, (name, image) in enumerate(images.items()):
+        axs[i].imshow(image)
+        axs[i].axis('off')
+        axs[i].set_title(name)
+    
+    # Hide remaining axes
+    for j in range(len(images), 12):
+        axs[j].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
 # Lets look at data we have
-awareness_parse_file = "/home/srkhuran-local/CarlaDReyeVR/DReyeVR-parser/results/exp_allan_51-awdata.json"
-images_dir = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/exp_allan-51_02_20_2024_17_21_58/images"
-awareness_df = pd.read_json(awareness_parse_file, orient='index')
 sensor_config_file = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/sensor_config.ini"
-recording_path = "/home/srkhuran-local/CarlaDReyeVR/DReyeVR-parser/recording_files/exp_allan-51_02_20_2024_17_21_58.rec"
+raw_data = "/home/srkhuran-local/raw_data"
 
-sitawdata = SituationalAwarenessDataset(recording_path, images_dir, awareness_df, sensor_config_file, gaussian_sigma = 40.0)
+sitawdata = SituationalAwarenessDataset(raw_data, sensor_config_file, "cbdr10-36")
 
-
-rgb_image, instance_seg_image, gaze_heatmap, rgb_left_image, instance_seg_left_image, gaze_heatmap_left, rgb_right_image, instance_seg_right_image, gaze_heatmap_right, gaze_heatmap, validity = sitawdata[1525] # get some sample
-visualize(
-    image=rgb_image, 
-    instance_mask=instance_seg_image,
-)
+final_concat_image, label_mask_image, validity = sitawdata[51] # get some sample
+# visualize_all(
+#     rgb_mid=rgb_image, 
+#     instance_seg_mid=instance_seg_image,
+#     gaze_mid=gaze_heatmap,
+#     rgb_left=rgb_left_image, 
+#     instance_seg_left=instance_seg_left_image,
+#     gaze_left=gaze_heatmap_left,
+#     rgb_right=rgb_right_image, 
+#     instance_seg_right=instance_seg_right_image,
+#     gaze_right=gaze_heatmap_right,
+#     label=label_mask_image
+# )
 
 
 
 # ## Create model and train
 import torch
+from torch.utils.data import DataLoader
 import numpy as np
 import segmentation_models_pytorch as smp
 from segmentation_models_pytorch import utils
@@ -87,26 +109,63 @@ model = smp.FPN(
     encoder_weights=ENCODER_WEIGHTS, 
     classes=len(CLASSES), 
     activation=ACTIVATION,
+    in_channels=15,
 )
 
-preprocessing_fn = smp.encoders.get_preprocessing_fn(ENCODER, ENCODER_WEIGHTS)
+#preprocessing_fn = smp.encoders.get_preprocessing_fn(ENCODER, ENCODER_WEIGHTS)
+raw_data = "/home/srkhuran-local/CarlaDReyeVR/raw_data"
+sensor_config_file = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/sensor_config.ini"
+
+episode_list = os.listdir(raw_data)
+train_episodes, val_episodes, test_episodes = data.split_train_val_test(episode_list, 0.8, 0.1, 0.1) # NOTE: DOUBLE CHECK THIS
+
+train_data = []
+for ep in train_episodes:
+    dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
+    train_data.append(dataset)
+train_dataset = torch.utils.data.ConcatDataset(train_data)
+
+valid_data = []
+for ep in val_episodes:
+    dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
+    valid_data.append(dataset)
+valid_dataset = torch.utils.data.ConcatDataset(valid_data)
+
+test_data = []
+for ep in test_episodes:
+    dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
+    test_data.append(dataset)
+test_dataset = torch.utils.data.ConcatDataset(test_data)
 
 
-train_dataset = Dataset(
-    x_train_dir, 
-    y_train_dir, 
-    augmentation=get_training_augmentation(), 
-    preprocessing=get_preprocessing(preprocessing_fn),
-    classes=CLASSES,
-)
+# train_dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, train_episodes) 
+# valid_dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, val_episodes)
+# test_dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, test_episodes)
 
-valid_dataset = Dataset(
-    x_valid_dir, 
-    y_valid_dir, 
-    augmentation=get_validation_augmentation(), 
-    preprocessing=get_preprocessing(preprocessing_fn),
-    classes=CLASSES,
-)
+
+# full_dataset = SituationalAwarenessDataset(raw_data, sensor_config_file) # NOTE: may need to take in run number as input and create seperate dataset for each run (concatenate them for training)
+# train_dataset, valid_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [0.8, 0.1, 0.1])
+# train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=12)
+# valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=4)
+#valid_dataset = SituationalAwarenessDataset()
+
+
+# train_dataset = Dataset(
+#     x_train_dir, 
+#     y_train_dir, 
+#     augmentation=get_training_augmentation(), 
+#     preprocessing=get_preprocessing(preprocessing_fn),
+#     classes=CLASSES,
+# )
+
+# valid_dataset = Dataset(
+#     x_valid_dir, 
+#     y_valid_dir, 
+#     augmentation=get_validation_augmentation(), 
+#     preprocessing=get_preprocessing(preprocessing_fn),
+#     classes=CLASSES,
+# )
+
 
 train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=12)
 valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=4)
@@ -173,14 +232,6 @@ for i in range(0, 40):
 # load best saved checkpoint
 best_model = torch.load('./best_model.pth')
 
-# create test dataset
-test_dataset = Dataset(
-    x_test_dir, 
-    y_test_dir, 
-    augmentation=get_validation_augmentation(), 
-    preprocessing=get_preprocessing(preprocessing_fn),
-    classes=CLASSES,
-)
 
 test_dataloader = DataLoader(test_dataset)
 
@@ -196,30 +247,30 @@ test_epoch = smp.utils.train.ValidEpoch(
 logs = test_epoch.run(test_dataloader)
 
 
-# ## Visualize predictions
+# # ## Visualize predictions
 
-# test dataset without transformations for image visualization
-test_dataset_vis = Dataset(
-    x_test_dir, y_test_dir, 
-    classes=CLASSES,
-)
+# # test dataset without transformations for image visualization
+# test_dataset_vis = Dataset(
+#     x_test_dir, y_test_dir, 
+#     classes=CLASSES,
+# )
 
 
-for i in range(5):
-    n = np.random.choice(len(test_dataset))
+# for i in range(5):
+#     n = np.random.choice(len(test_dataset))
     
-    image_vis = test_dataset_vis[n][0].astype('uint8')
-    image, gt_mask = test_dataset[n]
+#     image_vis = test_dataset_vis[n][0].astype('uint8')
+#     image, gt_mask = test_dataset[n]
     
-    gt_mask = gt_mask.squeeze()
+#     gt_mask = gt_mask.squeeze()
     
-    x_tensor = torch.from_numpy(image).to(DEVICE).unsqueeze(0)
-    pr_mask = best_model.predict(x_tensor)
-    pr_mask = (pr_mask.squeeze().cpu().numpy().round())
+#     x_tensor = torch.from_numpy(image).to(DEVICE).unsqueeze(0)
+#     pr_mask = best_model.predict(x_tensor)
+#     pr_mask = (pr_mask.squeeze().cpu().numpy().round())
         
-    visualize(
-        image=image_vis, 
-        ground_truth_mask=gt_mask, 
-        predicted_mask=pr_mask
-    )
+#     visualize(
+#         image=image_vis, 
+#         ground_truth_mask=gt_mask, 
+#         predicted_mask=pr_mask
+#     )
 
