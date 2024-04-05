@@ -11,6 +11,8 @@ import os
 import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from io import BytesIO
+from line_profiler import profile
+import torchvision.transforms.functional as TF
 
 def ptsWorld2Cam(focus_hit_pt, world2camMatrix, K):
     tick_focus_hitpt_homog = np.hstack((focus_hit_pt,1))    
@@ -67,38 +69,22 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     
     return pts_mid, pts_left, pts_right
 
-def gaussian_contour_plot(rgb_image, gaze_points, sigma=10.0, contour_levels=3):
+def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41):
     # Create a grid of coordinates
     height, width = rgb_image.shape[:2]
-    y, x = np.mgrid[0:height, 0:width]
-
-    composite_gaussian = np.zeros((height, width), dtype=float)
-
-    # Combine Gaussians centered at each point
+    mask = torch.zeros((1, height, width), dtype=torch.uint8)
+        
+    # set mask =1 at all gaze points
     for center_pixel in gaze_points:
-        mean = center_pixel
-        covariance_matrix = np.eye(2) * (sigma**2)
-        gaussian_distribution = multivariate_normal(mean=mean, cov=covariance_matrix)
+        mask[0, center_pixel[1], center_pixel[0]] = 255
 
-        positions = np.column_stack((x.ravel(), y.ravel()))
-        values = gaussian_distribution.pdf(positions)
-        gaussian_image = values.reshape(height, width)
+    # convolve the mask with a gaussian kernel    
+    heatmap = TF.gaussian_blur(mask, kernel_size, sigma)
+    heatmap[heatmap > 0] = 255
 
-        composite_gaussian += gaussian_image
-    buffer = BytesIO()
-    # Plot the original image and overlay the composite Gaussian contour plot
-    # px = 1/plt.rcParams['figure.dpi']
-    # plt.figure(figsize=(600*px,800*px))
-    plt.figure(figsize=(width / 100, height / 100))
-    plt.axis('off')
-    plt.imshow(rgb_image, cmap='gray')
-    plt.contourf(x, y, composite_gaussian, levels=contour_levels, cmap='binary_r', alpha=0.7)
-    plt.savefig(buffer, format='png')
-    buffer.seek(0)
-    heatmap_image = Image.open(buffer).convert('L')
-    
-    return heatmap_image
-
+    # heatmap_image = Image.fromarray(heatmap.numpy().squeeze())
+    # heatmap_image.save('heatmap.png')
+    return heatmap
 
 def frame_filter(frame_num, awareness_df):
      ego_vel = awareness_df["EgoVariables_VehicleVel"][frame_num-1]
@@ -108,16 +94,36 @@ def frame_filter(frame_num, awareness_df):
      else:
           return 1
 
+def read_corrected_csv(path):
+    corrected_labels_df = pd.read_csv(path)
+    # Extract columns into numpy arrays
+    frame_no = corrected_labels_df['frame_no'].to_numpy()
+    visible_total = corrected_labels_df['visible_total'].apply(eval).apply(np.array).to_numpy()
+    awareness_label = corrected_labels_df['awareness_label'].apply(eval).apply(np.array).to_numpy()
+    
+    data = {'frame_no': frame_no,
+    'visible_total': visible_total,
+    'awareness_label': awareness_label}
+
+    return pd.DataFrame(data)
 
 class SituationalAwarenessDataset(Dataset):
     #def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
-    def __init__(self, raw_data, sensor_config, episode, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
+    def __init__(self, raw_data, sensor_config, episode, args, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0 ):
         self.raw_data_dir = Path(raw_data)
         self.episode = episode
-        
+        self.rgb_frame_delay = 3
+        self.return_rgb = args.return_rgb
+        self.middle_only = args.middle_only
+        self.instseg_channels = args.instseg_channels
         self.images_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images"))
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
+        
+        corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
+        self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
+
+
         index_mapping = {}
         idx = 0
         # if self.episode == "cbdr10-23": #REMOVE THIS LATER
@@ -127,8 +133,13 @@ class SituationalAwarenessDataset(Dataset):
         #     awareness_dfs.append(aw_df_e)
             
         instance_seg_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images", "instance_segmentation_output"))
-        instance_seg_imgs = os.listdir(instance_seg_dir)
-        for i in range(len(instance_seg_imgs)):
+        instance_seg_imgs = sorted(os.listdir(instance_seg_dir), key = lambda x: int(x.split('.')[0]))[:-1]
+        # import ipdb; ipdb.set_trace()
+        # get the awareness df index where TimeElapsed > secs_of_history
+        # self.awareness_df = 
+        
+        # start from above index here
+        for i in range(self.awareness_df[self.awareness_df["TimeElapsed"] > secs_of_history].index[0], len(instance_seg_imgs)):
             file_name = instance_seg_imgs[i] # '000001.png' for example where 1 is the frame num
             frame_num = int(file_name.split('.')[0])
             index_mapping[idx] = frame_num
@@ -144,35 +155,50 @@ class SituationalAwarenessDataset(Dataset):
         self.sample_rate = sample_rate
         self.gaussian_sigma = gaussian_sigma
     
+    # @profile
     def __getitem__(self, idx):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
         # (read in raw gaze and construct heatmap in get_item itself), label mask image
         frame_num = self.index_mapping[idx]
-        print(frame_num)
-        rgb_image = Image.open(self.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
-        rgb_left_image = Image.open(self.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
-        rgb_right_image = Image.open(self.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
+        # print(frame_num)
+
+        # init data paths
+        if self.return_rgb:        
+            rgb_image = Image.open(self.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
+            if not self.middle_only:
+                rgb_left_image = Image.open(self.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
+                rgb_right_image = Image.open(self.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
+             
 
         instance_seg_image = Image.open(self.images_dir / 'instance_segmentation_output' / ('%.6d.png' % frame_num)).convert('RGB')
-        instance_seg_left_image = Image.open(self.images_dir / 'instance_segmentation_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
-        instance_seg_right_image = Image.open(self.images_dir / 'instance_segmentation_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
+        if not self.middle_only:
+            instance_seg_left_image = Image.open(self.images_dir / 'instance_segmentation_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
+            instance_seg_right_image = Image.open(self.images_dir / 'instance_segmentation_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
 
-        id_list = self.awareness_df["AwarenessData_Visible"][frame_num]
-        aw_visible = self.awareness_df["AwarenessData_Visible"][frame_num]
-        user_input = self.awareness_df["AwarenessData_UserInput"][frame_num]
-        aw_answer = self.awareness_df["AwarenessData_Answer"][frame_num]
+        # Label mask generation
+        id_list = self.awareness_df["AwarenessData_Visible"][frame_num-self.rgb_frame_delay]
+        aw_visible = self.awareness_df["AwarenessData_Visible"][frame_num-self.rgb_frame_delay]
+        user_input = self.awareness_df["AwarenessData_UserInput"][frame_num-self.rgb_frame_delay]
+        aw_answer = self.awareness_df["AwarenessData_Answer"][frame_num-self.rgb_frame_delay]
+
+        visible_total = self.corrected_labels_df['visible_total'][frame_num-self.rgb_frame_delay - 1] # -1 because corrected df is one frame shifted from awareness df
+        awareness_label = self.corrected_labels_df['awareness_label'][frame_num-self.rgb_frame_delay - 1] # -1 because corrected df is one frame shifted from awareness df
+
         with open("%s/offset.txt" % self.images_dir, 'r') as file:
             offset = int(file.read()) 
         
-        full_label_mask = self.get_full_label_mask(instance_seg_image, id_list, offset, aw_visible, aw_answer, user_input)
-        label_mask_image = Image.fromarray(full_label_mask)
-        
-        #label_mask_image = Image.open(images_dir / 'full_label_masks' / ('%.6d.png' % (frame_num)))
+        # full_label_mask = self.get_full_label_mask(instance_seg_image, id_list, offset, aw_visible, aw_answer, user_input)
+        full_label_mask = self.get_corrected_label_mask(instance_seg_image, visible_total, awareness_label)
+        if not self.middle_only:
+            full_label_mask_left = self.get_corrected_label_mask(instance_seg_left_image, visible_total, awareness_label)
+            full_label_mask_right = self.get_corrected_label_mask(instance_seg_right_image, visible_total, awareness_label)
+        # label_mask_image = Image.fromarray(full_label_mask)
 
         # Construct gaze heatmap
         raw_gaze_mid= []
-        raw_gaze_left = []
-        raw_gaze_right = []
+        if not self.middle_only:
+            raw_gaze_left = []
+            raw_gaze_right = []
         
         current_time = self.awareness_df["TimeElapsed"][frame_num]
         end_time = current_time - self.secs_of_history
@@ -211,37 +237,88 @@ class SituationalAwarenessDataset(Dataset):
             loc = np.asarray([loc[0], loc[1], loc[2]])
             rot = self.awareness_df["EgoVariables_VehicleRot"][closest_frame]
             rot = np.asarray([rot[0], rot[1], rot[2]])
+            
             pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
-            raw_gaze_mid.append(pts_mid)
-            raw_gaze_left.append(pts_left)
-            raw_gaze_right.append(pts_right)
-        gaze_heatmap = gaussian_contour_plot(np.array(rgb_image), raw_gaze_mid, sigma=self.gaussian_sigma , contour_levels=3)
-        gaze_heatmap_left = gaussian_contour_plot(np.array(rgb_left_image), raw_gaze_left, sigma=self.gaussian_sigma , contour_levels=3)
-        gaze_heatmap_right = gaussian_contour_plot(np.array(rgb_right_image), raw_gaze_right, sigma=self.gaussian_sigma , contour_levels=3)
+            
+
+            # don't append gaze if its outside the image            
+            if pts_mid[0] >= 0 and pts_mid[0] < instance_seg_image.width and \
+                pts_mid[1] >= 0 and pts_mid[1] < instance_seg_image.height:
+                raw_gaze_mid.append(pts_mid)
+            if not self.middle_only:
+                if pts_left[0] >= 0 and pts_left[0] < instance_seg_left_image.width and \
+                    pts_left[1] >= 0 and pts_left[1] < instance_seg_left_image.height:
+                    raw_gaze_left.append(pts_left)
+                if pts_right[0] >= 0 and pts_right[0] < instance_seg_right_image.width and \
+                    pts_right[1] >= 0 and pts_right[1] < instance_seg_right_image.height:
+                    raw_gaze_right.append(pts_right)
+
+        gaze_heatmap = gaussian_contour_plot(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma)
+        if not self.middle_only:
+            gaze_heatmap_left = gaussian_contour_plot(np.array(instance_seg_left_image), raw_gaze_left, sigma=self.gaussian_sigma )
+            gaze_heatmap_right = gaussian_contour_plot(np.array(instance_seg_right_image), raw_gaze_right, sigma=self.gaussian_sigma)
         
         # Convert all images to tensors
-        rgb_image = transforms.functional.to_tensor(rgb_image)
-        rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
-        rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
-        instance_seg_image = transforms.functional.to_tensor(instance_seg_image)
-        instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)
-        instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)
-        print(rgb_image.shape)
-        print(instance_seg_image.shape)
-        gaze_heatmap = transforms.functional.to_tensor(gaze_heatmap)
-        print(gaze_heatmap.shape)
-        gaze_heatmap_left = transforms.functional.to_tensor(gaze_heatmap_left)
-        gaze_heatmap_right = transforms.functional.to_tensor(gaze_heatmap_right)
+        if self.return_rgb:
+            rgb_image = transforms.functional.to_tensor(rgb_image)
+            if not self.middle_only:
+                rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
+                rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
+        instance_seg_image = transforms.functional.to_tensor(instance_seg_image)[:self.instseg_channels, :, : ] # only read the r and g channel
+        if not self.middle_only:
+            instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)[:self.instseg_channels, :, : ]
+            instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)[:self.instseg_channels, :, : ]
+        
+        label_mask_image = transforms.functional.to_tensor(full_label_mask)
+        if not self.middle_only:
+            label_mask_image_left = transforms.functional.to_tensor(full_label_mask_left)
+            label_mask_image_right = transforms.functional.to_tensor(full_label_mask_right)
 
+        # validity = frame_filter(frame_num, self.awareness_df)
+        if self.return_rgb:
+            if not self.middle_only:
+                input_images = (rgb_image, instance_seg_image, gaze_heatmap, 
+                                rgb_left_image, instance_seg_left_image, gaze_heatmap_left, 
+                                rgb_right_image, instance_seg_right_image, gaze_heatmap_right)
+            else:
+                input_images = (rgb_image, instance_seg_image, gaze_heatmap)
 
-        validity = frame_filter(frame_num, self.awareness_df)
-
-        input_images = (rgb_image, instance_seg_image, gaze_heatmap, 
-                        rgb_left_image, instance_seg_left_image, gaze_heatmap_left, 
-                        rgb_right_image, instance_seg_right_image, gaze_heatmap_right)
+        else:
+            if not self.middle_only:
+                input_images = (instance_seg_image, gaze_heatmap, 
+                                instance_seg_left_image, gaze_heatmap_left, 
+                                instance_seg_right_image, gaze_heatmap_right)
+            else:
+                input_images = (instance_seg_image, gaze_heatmap)
         final_input_image = torch.cat(input_images)
+        if not self.middle_only:
+            final_label_mask_image = torch.cat((label_mask_image, label_mask_image_left, label_mask_image_right))
+        else:
+            final_label_mask_image = label_mask_image
+        padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
+        padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
 
-        return final_input_image, label_mask_image, validity
+
+        return padded_tensor, padded_label_mask_image_tensor
+    
+    def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels):
+        width, height = inst_img.size
+        mask = np.zeros((height, width), dtype=np.uint8)
+        #mask = np.zeros((width, height))
+        raw_img = np.array(inst_img)
+        b = raw_img[:, :, 2]
+        g = raw_img[:, :, 1]
+        # Calculate the sum of b*256 + g
+        sum_bg = (b * 256) + g
+        
+        for id_idx, id in enumerate(visible_ids):
+            if awareness_labels[id_idx] == 1:
+                # Create a mask where sum_bg is equal to target_value
+                mask[sum_bg == int(id)] = 100
+            else:
+                mask[sum_bg == int(id)] = 200
+        
+        return mask
     
     def get_full_label_mask(self, inst_img, id_list, offset, aw_visible, aw_answer, user_input, type_bit=16):
         width, height = inst_img.size
@@ -293,7 +370,8 @@ class SituationalAwarenessDataset(Dataset):
         return world2pixels(focus_hit_pt_scaled, vehicle_transform, K, self.sensor_config)
 
 
-
+    def __len__(self):        
+        return len(self.index_mapping)
 
 
         

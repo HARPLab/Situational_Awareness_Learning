@@ -30,7 +30,6 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import pandas as pd
 import matplotlib.pyplot as plt
-import data
 from data.dataset_full import SituationalAwarenessDataset
     
 
@@ -64,12 +63,12 @@ def visualize_all(**images):
     plt.show()
 
 # Lets look at data we have
-sensor_config_file = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/sensor_config.ini"
-raw_data = "/home/srkhuran-local/raw_data"
+# sensor_config_file = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/sensor_config.ini"
+# raw_data = "/home/srkhuran-local/raw_data"
 
-sitawdata = SituationalAwarenessDataset(raw_data, sensor_config_file, "cbdr10-36")
+# sitawdata = SituationalAwarenessDataset(raw_data, sensor_config_file, "cbdr10-36")
 
-final_concat_image, label_mask_image, validity = sitawdata[51] # get some sample
+# final_concat_image, label_mask_image, validity = sitawdata[51] # get some sample
 # visualize_all(
 #     rgb_mid=rgb_image, 
 #     instance_seg_mid=instance_seg_image,
@@ -90,52 +89,73 @@ import torch
 from torch.utils.data import DataLoader
 import numpy as np
 import segmentation_models_pytorch as smp
-from segmentation_models_pytorch import utils
-
+from segmentation_models_pytorch import utils as smp_utils
+import argparse 
 
 
 # encoder = 'se_resnext50_32x4d'
 # encoder_weights = 'imagenet'
+# add argparse for encoder and encoder_weights
 
-ENCODER = 'mobilenet_v2'
-ENCODER_WEIGHTS = 'imagenet'
-CLASSES = ['car']
-ACTIVATION = 'sigmoid' # could be None for logits or 'softmax2d' for multiclass segmentation
-DEVICE = 'cuda'
+args = argparse.ArgumentParser()
+args.add_argument("--encoder", type=str, default='mobilenet_v2')
+args.add_argument("--encoder-weights", type=str, default='imagenet')
+args.add_argument("--classes", type=str, default='car')
+args.add_argument("--activation", type=str, default='sigmoid')
+args.add_argument("--device", type=str, default='cuda')
+args.add_argument("--num-workers", type=int, default=0)
+
+args.add_argument("--raw-data", type=str, default='/scratch/pranaygu/raw_data')
+args.add_argument("--return_rgb", action='store_true')
+args.add_argument("--instseg_channels", type=int, default=2)
+args.add_argument("--middle_only", action='store_false')
+
+
+args.add_argument("--sensor-config-file", type=str, default='/home/pranaygu-local/Situational_Awareness_Learning/sensor_config.ini')
+
+args = args.parse_args()
+
+ENCODER = args.encoder
+ENCODER_WEIGHTS = args.encoder_weights
+CLASSES = ['aware', 'not_aware']
+ACTIVATION = args.activation # could be None for logits or 'softmax2d' for multiclass segmentation
+DEVICE = args.device
+
+num_images_per_sample = 1 if args.middle_only else 3
+in_channels = num_images_per_sample*(3*(args.return_rgb) + args.instseg_channels + 1)
 
 # create segmentation model with pretrained encoder
 model = smp.FPN(
-    encoder_name=ENCODER, 
-    encoder_weights=ENCODER_WEIGHTS, 
+    encoder_name=args.encoder, 
+    encoder_weights=args.encoder_weights, 
     classes=len(CLASSES), 
     activation=ACTIVATION,
-    in_channels=15,
+    in_channels=in_channels,
 )
 
 #preprocessing_fn = smp.encoders.get_preprocessing_fn(ENCODER, ENCODER_WEIGHTS)
-raw_data = "/home/srkhuran-local/CarlaDReyeVR/raw_data"
-sensor_config_file = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/sensor_config.ini"
 
-episode_list = os.listdir(raw_data)
-train_episodes, val_episodes, test_episodes = data.split_train_val_test(episode_list, 0.8, 0.1, 0.1) # NOTE: DOUBLE CHECK THIS
-
+episode_list = os.listdir(args.raw_data)
+# train_episodes, val_episodes, test_episodes = data.split_train_val_test(episode_list, 0.8, 0.1, 0.1) # NOTE: DOUBLE CHECK THIS
+train_episodes = [episode_list[0]]
+print(train_episodes)
 train_data = []
 for ep in train_episodes:
-    dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
+    dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
     train_data.append(dataset)
 train_dataset = torch.utils.data.ConcatDataset(train_data)
 
-valid_data = []
-for ep in val_episodes:
-    dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
-    valid_data.append(dataset)
-valid_dataset = torch.utils.data.ConcatDataset(valid_data)
+# valid_data = []
+# for ep in val_episodes:
+#     dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
+#     valid_data.append(dataset)
+# valid_dataset = torch.utils.data.ConcatDataset(valid_data)
 
-test_data = []
-for ep in test_episodes:
-    dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
-    test_data.append(dataset)
-test_dataset = torch.utils.data.ConcatDataset(test_data)
+# test_data = []
+# for ep in test_episodes:
+#     dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
+#     test_data.append(dataset)
+# test_dataset = torch.utils.data.ConcatDataset(test_data)
 
 
 # train_dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, train_episodes) 
@@ -167,16 +187,16 @@ test_dataset = torch.utils.data.ConcatDataset(test_data)
 # )
 
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=12)
-valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=4)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=args.num_workers)
+# valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=4)
 
 
 # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
 # IoU/Jaccard score - https://en.wikipedia.org/wiki/Jaccard_index
 
-loss = smp.utils.losses.DiceLoss()
+loss = smp_utils.losses.DiceLoss()
 metrics = [
-    smp.utils.metrics.IoU(threshold=0.5),
+    smp_utils.metrics.IoU(threshold=0.5),
 ]
 
 optimizer = torch.optim.Adam([ 
@@ -187,7 +207,7 @@ optimizer = torch.optim.Adam([
 
 # create epoch runners 
 # it is a simple loop of iterating over dataloader`s samples
-train_epoch = smp.utils.train.TrainEpoch(
+train_epoch = smp_utils.train.TrainEpoch(
     model, 
     loss=loss, 
     metrics=metrics, 
@@ -196,28 +216,27 @@ train_epoch = smp.utils.train.TrainEpoch(
     verbose=True,
 )
 
-valid_epoch = smp.utils.train.ValidEpoch(
-    model, 
-    loss=loss, 
-    metrics=metrics, 
-    device=DEVICE,
-    verbose=True,
-)
+# valid_epoch = smp_utils.train.ValidEpoch(
+#     model, 
+#     loss=loss, 
+#     metrics=metrics, 
+#     device=DEVICE,
+#     verbose=True,
+# )
 
 
 # train model for 40 epochs
-
 max_score = 0
 
 for i in range(0, 40):
     
     print('\nEpoch: {}'.format(i))
     train_logs = train_epoch.run(train_loader)
-    valid_logs = valid_epoch.run(valid_loader)
+    # valid_logs = valid_epoch.run(valid_loader)
     
     # do something (save model, change lr, etc.)
-    if max_score < valid_logs['iou_score']:
-        max_score = valid_logs['iou_score']
+    if max_score < train_logs['iou_score']:
+        max_score = train_logs['iou_score']
         torch.save(model, './best_model.pth')
         print('Model saved!')
         
@@ -233,18 +252,18 @@ for i in range(0, 40):
 best_model = torch.load('./best_model.pth')
 
 
-test_dataloader = DataLoader(test_dataset)
+# test_dataloader = DataLoader(test_dataset)
 
 
-# evaluate model on test set
-test_epoch = smp.utils.train.ValidEpoch(
-    model=best_model,
-    loss=loss,
-    metrics=metrics,
-    device=DEVICE,
-)
+# # evaluate model on test set
+# test_epoch = smp_utils.train.ValidEpoch(
+#     model=best_model,
+#     loss=loss,
+#     metrics=metrics,
+#     device=DEVICE,
+# )
 
-logs = test_epoch.run(test_dataloader)
+# logs = test_epoch.run(test_dataloader)
 
 
 # # ## Visualize predictions

@@ -1,0 +1,36 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File with profiler",
+            "type": "python",
+            "request": "launch",
+            "module": "cProfile",
+            "args": [
+                "-o", "/tmp/tmp.prof", "${file}"
+            ]
+        },
+        {
+            "name": "smp_integrated_test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/models/smp_integrated_test.py",
+            "console": "integratedTerminal",
+            "args": []
+            // "args": "${command:pickArgs}"
+        },
+        {
+            "name": "smp_integrated_test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/models/smp_integrated_test.py",
+            "console": "integratedTerminal",
+            "args": ["--num-workers",
+                        "${input:enterNW}"]
+            // "args": "${command:pickArgs}"
+        }
+    ]
+}
