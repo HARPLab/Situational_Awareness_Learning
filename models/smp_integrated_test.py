@@ -91,6 +91,7 @@ import numpy as np
 import segmentation_models_pytorch as smp
 from segmentation_models_pytorch import utils as smp_utils
 import argparse 
+import wandb
 
 
 # encoder = 'se_resnext50_32x4d'
@@ -103,17 +104,21 @@ args.add_argument("--encoder-weights", type=str, default='imagenet')
 args.add_argument("--classes", type=str, default='car')
 args.add_argument("--activation", type=str, default='sigmoid')
 args.add_argument("--device", type=str, default='cuda')
-args.add_argument("--num-workers", type=int, default=0)
+args.add_argument("--num-workers", type=int, default=4)
 
-args.add_argument("--raw-data", type=str, default='/scratch/pranaygu/raw_data')
+args.add_argument("--raw-data", type=str, default='/media/storage/raw_data_corrected')
 args.add_argument("--return_rgb", action='store_true')
 args.add_argument("--instseg_channels", type=int, default=2)
 args.add_argument("--middle_only", action='store_false')
 
+args.add_argument("--batch-size", type=int, default=16)
 
-args.add_argument("--sensor-config-file", type=str, default='/home/pranaygu-local/Situational_Awareness_Learning/sensor_config.ini')
+
+args.add_argument("--sensor-config-file", type=str, default='sensor_config.ini')
 
 args = args.parse_args()
+
+
 
 ENCODER = args.encoder
 ENCODER_WEIGHTS = args.encoder_weights
@@ -123,6 +128,7 @@ DEVICE = args.device
 
 num_images_per_sample = 1 if args.middle_only else 3
 in_channels = num_images_per_sample*(3*(args.return_rgb) + args.instseg_channels + 1)
+train_batch_size = args.batch_size
 
 # create segmentation model with pretrained encoder
 model = smp.FPN(
@@ -137,19 +143,34 @@ model = smp.FPN(
 
 episode_list = os.listdir(args.raw_data)
 # train_episodes, val_episodes, test_episodes = data.split_train_val_test(episode_list, 0.8, 0.1, 0.1) # NOTE: DOUBLE CHECK THIS
-train_episodes = [episode_list[0]]
+train_episodes = episode_list[:-3]
 print(train_episodes)
+val_episodes = episode_list[-3:]
+
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="SA",
+
+    # track hyperparameters and run metadata
+    config= {"args":args,
+    "train_episodes":train_episodes,
+    "val_episodes":val_episodes}
+)
+
 train_data = []
 for ep in train_episodes:
     dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
     train_data.append(dataset)
 train_dataset = torch.utils.data.ConcatDataset(train_data)
 
-# valid_data = []
-# for ep in val_episodes:
-#     dataset = SituationalAwarenessDataset(raw_data, sensor_config_file, ep)
-#     valid_data.append(dataset)
-# valid_dataset = torch.utils.data.ConcatDataset(valid_data)
+
+valid_data = []
+for ep in val_episodes:
+    dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
+    valid_data.append(dataset)
+valid_dataset = torch.utils.data.ConcatDataset(valid_data)
+
+
 
 # test_data = []
 # for ep in test_episodes:
@@ -187,8 +208,8 @@ train_dataset = torch.utils.data.ConcatDataset(train_data)
 # )
 
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=args.num_workers)
-# valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=4)
+train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
+valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
 
 
 # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
@@ -216,14 +237,13 @@ train_epoch = smp_utils.train.TrainEpoch(
     verbose=True,
 )
 
-# valid_epoch = smp_utils.train.ValidEpoch(
-#     model, 
-#     loss=loss, 
-#     metrics=metrics, 
-#     device=DEVICE,
-#     verbose=True,
-# )
-
+valid_epoch = smp_utils.train.ValidEpoch(
+    model, 
+    loss=loss, 
+    metrics=metrics, 
+    device=DEVICE,
+    verbose=True,
+)
 
 # train model for 40 epochs
 max_score = 0
@@ -232,21 +252,25 @@ for i in range(0, 40):
     
     print('\nEpoch: {}'.format(i))
     train_logs = train_epoch.run(train_loader)
-    # valid_logs = valid_epoch.run(valid_loader)
+    valid_logs = valid_epoch.run(valid_loader)
     
+    for k in train_logs:
+        wandb.log({"train_"+k: train_logs[k]})
+    for k in valid_logs:
+        wandb.log({"valid_"+k: valid_logs[k]})
     # do something (save model, change lr, etc.)
     if max_score < train_logs['iou_score']:
         max_score = train_logs['iou_score']
         torch.save(model, './best_model.pth')
         print('Model saved!')
         
-    if i == 25:
+    if i == 10:
         optimizer.param_groups[0]['lr'] = 1e-5
         print('Decrease decoder learning rate to 1e-5!')
 
 
 # ## Test best saved model
-
+wandb.finish()
 
 # load best saved checkpoint
 best_model = torch.load('./best_model.pth')

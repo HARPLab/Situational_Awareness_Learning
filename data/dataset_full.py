@@ -87,8 +87,8 @@ def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41):
     return heatmap
 
 def frame_filter(frame_num, awareness_df):
-     ego_vel = awareness_df["EgoVariables_VehicleVel"][frame_num-1]
-     visible_list = awareness_df["AwarenessData_Visible"][frame_num-1]
+     ego_vel = awareness_df["EgoVariables_VehicleVel"][frame_num]
+     visible_list = awareness_df["AwarenessData_Visible"][frame_num]
      if ego_vel == 0 and visible_list == []:
           return 0
      else:
@@ -133,7 +133,8 @@ class SituationalAwarenessDataset(Dataset):
         #     awareness_dfs.append(aw_df_e)
             
         instance_seg_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images", "instance_segmentation_output"))
-        instance_seg_imgs = sorted(os.listdir(instance_seg_dir), key = lambda x: int(x.split('.')[0]))[:-1]
+        label_correction_end_buffer = -50
+        instance_seg_imgs = sorted(os.listdir(instance_seg_dir), key = lambda x: int(x.split('.')[0]))[:label_correction_end_buffer]
         # import ipdb; ipdb.set_trace()
         # get the awareness df index where TimeElapsed > secs_of_history
         # self.awareness_df = 
@@ -159,6 +160,7 @@ class SituationalAwarenessDataset(Dataset):
     def __getitem__(self, idx):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
         # (read in raw gaze and construct heatmap in get_item itself), label mask image
+        # idx = max(self.index_mapping.keys())
         frame_num = self.index_mapping[idx]
         # print(frame_num)
 
