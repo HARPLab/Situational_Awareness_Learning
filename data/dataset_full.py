@@ -11,7 +11,6 @@ import os
 import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from io import BytesIO
-from line_profiler import profile
 import torchvision.transforms.functional as TF
 
 def ptsWorld2Cam(focus_hit_pt, world2camMatrix, K):
@@ -69,14 +68,24 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     
     return pts_mid, pts_left, pts_right
 
-def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41):
+def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41, gaze_fade=False):
     # Create a grid of coordinates
     height, width = rgb_image.shape[:2]
     mask = torch.zeros((1, height, width), dtype=torch.uint8)
-        
-    # set mask =1 at all gaze points
-    for center_pixel in gaze_points:
-        mask[0, center_pixel[1], center_pixel[0]] = 255
+
+    gaze_fade_min = 10    
+    N = len(gaze_points)
+    gaze_fade_step = (255 - gaze_fade_min) / N
+    
+    if not gaze_fade:
+        for center_pixel in gaze_points:
+            mask[0, center_pixel[1], center_pixel[0]] = 255
+    else:
+        for i, center_pixel in enumerate(gaze_points):
+            if center_pixel[0] < -1 or center_pixel[1] < -1:
+                continue
+            # fade gaze from 255 to gaze_fade_min linearly based on time
+            mask[0, center_pixel[1], center_pixel[0]] = int(gaze_fade_min + gaze_fade_step*(N-i))
 
     # convolve the mask with a gaussian kernel    
     heatmap = TF.gaussian_blur(mask, kernel_size, sigma)
@@ -99,26 +108,35 @@ def read_corrected_csv(path):
     # Extract columns into numpy arrays
     frame_no = corrected_labels_df['frame_no'].to_numpy()
     visible_total = corrected_labels_df['visible_total'].apply(eval).apply(np.array).to_numpy()
+    visible_is = corrected_labels_df['visible_is'].apply(eval).apply(np.array).to_numpy()
     awareness_label = corrected_labels_df['awareness_label'].apply(eval).apply(np.array).to_numpy()
+    awareness_label = corrected_labels_df['awareness_label'].apply(eval).apply(np.array).to_numpy()
+    
     
     data = {'frame_no': frame_no,
     'visible_total': visible_total,
-    'awareness_label': awareness_label}
+    'awareness_label': awareness_label,
+    'visible_is': visible_is}
 
     return pd.DataFrame(data)
 
 class SituationalAwarenessDataset(Dataset):
     #def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
-    def __init__(self, raw_data, sensor_config, episode, args, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0 ):
+    def __init__(self, raw_data, sensor_config, episode, args):
         self.raw_data_dir = Path(raw_data)
         self.episode = episode
         self.rgb_frame_delay = 3
-        self.return_rgb = args.return_rgb
+        self.use_rgb = args.use_rgb
         self.middle_only = args.middle_only
         self.instseg_channels = args.instseg_channels
         self.images_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images"))
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
+        self.args = args
+
+        secs_of_history = args.secs_of_history
+        sample_rate = args.history_sample_rate
+        gaussian_sigma = args.gaze_gaussian_sigma
         
         corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
         self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
@@ -135,16 +153,35 @@ class SituationalAwarenessDataset(Dataset):
         instance_seg_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images", "instance_segmentation_output"))
         label_correction_end_buffer = -50
         instance_seg_imgs = sorted(os.listdir(instance_seg_dir), key = lambda x: int(x.split('.')[0]))[:label_correction_end_buffer]
-        # import ipdb; ipdb.set_trace()
-        # get the awareness df index where TimeElapsed > secs_of_history
-        # self.awareness_df = 
         
+        first_valid_idx = self.awareness_df[self.awareness_df["TimeElapsed"] > secs_of_history].index[0]
+        class_distribution = np.array([0,0])
+        skip_ctr = 0
         # start from above index here
-        for i in range(self.awareness_df[self.awareness_df["TimeElapsed"] > secs_of_history].index[0], len(instance_seg_imgs)):
+        for i in range(first_valid_idx, len(instance_seg_imgs)):
             file_name = instance_seg_imgs[i] # '000001.png' for example where 1 is the frame num
-            frame_num = int(file_name.split('.')[0])
+            frame_num = int(file_name.split('.')[0])        
+            # check that target (label mask) is not empty
+            cur_row = self.corrected_labels_df.iloc[frame_num - self.rgb_frame_delay]
+            actor_IDs = cur_row['visible_is']
+            valid_vis = actor_IDs != 0
+            num_objs_vis = np.sum(valid_vis)
+            if num_objs_vis == 0:
+                skip_ctr += 1
+                continue
+            valid_actors = actor_IDs[valid_vis]
+            vis_total = cur_row['visible_total']
+            vis_idcs_forlabel = np.in1d(vis_total, valid_actors)
+            cur_awlabels = cur_row['awareness_label'][vis_idcs_forlabel]            
+            num_vis_aware = np.count_nonzero(cur_awlabels)
+            num_vis_unaware = cur_awlabels.size - num_vis_aware
+            class_distribution += [num_vis_unaware, num_vis_aware]
+
+            # add valid frame to index mapping
             index_mapping[idx] = frame_num
+
             idx += 1
+        
         self.index_mapping = index_mapping
         #print(self.index_mapping)
         
@@ -155,8 +192,9 @@ class SituationalAwarenessDataset(Dataset):
         self.secs_of_history = secs_of_history 
         self.sample_rate = sample_rate
         self.gaussian_sigma = gaussian_sigma
+        print("Class distribution for episode %s: %s" % (self.episode, class_distribution))
+        print("Number of frames skipped: %d" % skip_ctr)
     
-    # @profile
     def __getitem__(self, idx):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
         # (read in raw gaze and construct heatmap in get_item itself), label mask image
@@ -165,7 +203,7 @@ class SituationalAwarenessDataset(Dataset):
         # print(frame_num)
 
         # init data paths
-        if self.return_rgb:        
+        if self.use_rgb:        
             rgb_image = Image.open(self.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
             if not self.middle_only:
                 rgb_left_image = Image.open(self.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
@@ -214,17 +252,19 @@ class SituationalAwarenessDataset(Dataset):
             frame = frame_num - i - 1
             i+=1
         
-        total_history_frames = self.secs_of_history*self.sample_rate
+        assert self.secs_of_history*self.sample_rate == int(self.secs_of_history*self.sample_rate), "sample_rate x secs_of_history must be an integer"
+        total_history_frames = int(self.secs_of_history*self.sample_rate)
         frame_time = 1/self.sample_rate
         step = 0
 
         frame = frame_num - 1
+        raw_gaze_mid, raw_gaze_left, raw_gaze_right = np.zeros((total_history_frames+1, 2), dtype=np.int32)-1,  \
+                                                        np.zeros((total_history_frames+1, 2), dtype=np.int32)-1, \
+                                                        np.zeros((total_history_frames+1, 2), dtype=np.int32)-1
         while frame > 0 and step != total_history_frames:
 
             target_time = self.awareness_df["TimeElapsed"][frame] - frame_time*step
-            #closest_frame_idx = np.argmin(abs(history_frame_times-target_time))
             closest_frame_indices_ranking = np.argsort(abs(np.array(history_frame_times)-target_time))
-            #closest_frame = history_frames[closest_frame_idx]
             closest_frame_ranking = [history_frames[i] for i in closest_frame_indices_ranking]
             
             closest_frame = 0
@@ -246,22 +286,24 @@ class SituationalAwarenessDataset(Dataset):
             # don't append gaze if its outside the image            
             if pts_mid[0] >= 0 and pts_mid[0] < instance_seg_image.width and \
                 pts_mid[1] >= 0 and pts_mid[1] < instance_seg_image.height:
-                raw_gaze_mid.append(pts_mid)
+                raw_gaze_mid[step,:] = pts_mid
             if not self.middle_only:
                 if pts_left[0] >= 0 and pts_left[0] < instance_seg_left_image.width and \
                     pts_left[1] >= 0 and pts_left[1] < instance_seg_left_image.height:
-                    raw_gaze_left.append(pts_left)
+                    raw_gaze_left[step,:] = pts_left
                 if pts_right[0] >= 0 and pts_right[0] < instance_seg_right_image.width and \
                     pts_right[1] >= 0 and pts_right[1] < instance_seg_right_image.height:
-                    raw_gaze_right.append(pts_right)
+                    raw_gaze_right[step,:] = pts_right
 
-        gaze_heatmap = gaussian_contour_plot(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma)
+        gaze_heatmap = gaussian_contour_plot(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
         if not self.middle_only:
-            gaze_heatmap_left = gaussian_contour_plot(np.array(instance_seg_left_image), raw_gaze_left, sigma=self.gaussian_sigma )
-            gaze_heatmap_right = gaussian_contour_plot(np.array(instance_seg_right_image), raw_gaze_right, sigma=self.gaussian_sigma)
+            gaze_heatmap_left = gaussian_contour_plot(np.array(instance_seg_left_image), 
+                                                      raw_gaze_left, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
+            gaze_heatmap_right = gaussian_contour_plot(np.array(instance_seg_right_image), 
+                                                       raw_gaze_right, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
         
         # Convert all images to tensors
-        if self.return_rgb:
+        if self.use_rgb:
             rgb_image = transforms.functional.to_tensor(rgb_image)
             if not self.middle_only:
                 rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
@@ -276,8 +318,7 @@ class SituationalAwarenessDataset(Dataset):
             label_mask_image_left = transforms.functional.to_tensor(full_label_mask_left)
             label_mask_image_right = transforms.functional.to_tensor(full_label_mask_right)
 
-        # validity = frame_filter(frame_num, self.awareness_df)
-        if self.return_rgb:
+        if self.use_rgb:
             if not self.middle_only:
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap, 
                                 rgb_left_image, instance_seg_left_image, gaze_heatmap_left, 
@@ -305,7 +346,8 @@ class SituationalAwarenessDataset(Dataset):
     
     def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels):
         width, height = inst_img.size
-        mask = np.zeros((height, width), dtype=np.uint8)
+        num_channels = 2 # aware, not aware
+        mask = np.zeros((height, width, num_channels), dtype=np.uint8)
         #mask = np.zeros((width, height))
         raw_img = np.array(inst_img)
         b = raw_img[:, :, 2]
@@ -316,9 +358,9 @@ class SituationalAwarenessDataset(Dataset):
         for id_idx, id in enumerate(visible_ids):
             if awareness_labels[id_idx] == 1:
                 # Create a mask where sum_bg is equal to target_value
-                mask[sum_bg == int(id)] = 100
+                mask[sum_bg == int(id), 0] = 255
             else:
-                mask[sum_bg == int(id)] = 200
+                mask[sum_bg == int(id), 1] = 255
         
         return mask
     

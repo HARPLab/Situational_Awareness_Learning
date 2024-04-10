@@ -53,3 +53,5 @@ dependencies:
       - torchvision==0.14.1
       - typing-extensions==4.7.1
       - urllib3==2.0.7
+      - segmentation-models-pytorch
+      - wandb

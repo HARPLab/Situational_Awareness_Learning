@@ -23,13 +23,15 @@
             // "args": "${command:pickArgs}"
         },
         {
-            "name": "smp_integrated_test",
+            "name": "smp_integrated_test_bhram2_small",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/models/smp_integrated_test.py",
             "console": "integratedTerminal",
-            "args": ["--num-workers",
-                        "${input:enterNW}"]
+            "args": [
+                        "--num-workers", "12",
+                        "--raw-data", "/home/harpadmin/raw_data_corrected"
+                    ]
             // "args": "${command:pickArgs}"
         }
     ]
