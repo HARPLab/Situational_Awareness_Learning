@@ -2,7 +2,9 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
-
+import os.path
+home_folder = os.path.expanduser('~')
+sys.path.insert(0, os.path.join(home_folder, 'Situational_Awareness_Learning'))
 from data.dataset_full import SituationalAwarenessDataset
 import torch
 from torch.utils.data import DataLoader
@@ -42,40 +44,15 @@ def visualize_all(**images):
     plt.tight_layout()
     plt.show()
 
-# Lets look at data we have
-# sensor_config_file = "/home/srkhuran-local/CarlaDReyeVR/carla/PythonAPI/examples/sensor_config.ini"
-# raw_data = "/home/srkhuran-local/raw_data"
 
-# sitawdata = SituationalAwarenessDataset(raw_data, sensor_config_file, "cbdr10-36")
-
-# final_concat_image, label_mask_image, validity = sitawdata[51] # get some sample
-# visualize_all(
-#     rgb_mid=rgb_image, 
-#     instance_seg_mid=instance_seg_image,
-#     gaze_mid=gaze_heatmap,
-#     rgb_left=rgb_left_image, 
-#     instance_seg_left=instance_seg_left_image,
-#     gaze_left=gaze_heatmap_left,
-#     rgb_right=rgb_right_image, 
-#     instance_seg_right=instance_seg_right_image,
-#     gaze_right=gaze_heatmap_right,
-#     label=label_mask_image
-# )
-
-
-# ## Create model and train
-# encoder = 'se_resnext50_32x4d'
-# encoder_weights = 'imagenet'
-# add argparse for encoder and encoder_weights
 
 def main(args):
     ENCODER = args.encoder
-    ENCODER_WEIGHTS = args.encoder_weights
     CLASSES = ['aware', 'not_aware']
     ACTIVATION = args.activation # could be None for logits or 'softmax2d' for multiclass segmentation
     DEVICE = args.device
 
-    num_images_per_sample = 1 if args.middle_only else 3
+    num_images_per_sample = 1 if args.middle_andsides else 3
     in_channels = num_images_per_sample*(3*(args.use_rgb) + args.instseg_channels + 1)
     train_batch_size = args.batch_size
 
@@ -94,18 +71,20 @@ def main(args):
     episode_list = sorted(os.listdir(args.raw_data), reverse=False)
     num_val_episodes = args.num_val_episodes
     # train_episodes, val_episodes, test_episodes = data.split_train_val_test(episode_list, 0.8, 0.1, 0.1) # NOTE: DOUBLE CHECK THIS
+    
+    # set random seed and shuffle dataset
+    torch.manual_seed(args.random_seed)
+    np.random.seed(args.random_seed)
+    np.random.shuffle(episode_list)
     train_episodes = episode_list[:-num_val_episodes]
     print("Train routes:", train_episodes)
     val_episodes = episode_list[-num_val_episodes:]
     print("Val routes:", val_episodes)
 
+    wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,
+            args.instseg_channels, args.secs_of_history, 
+            args.history_sample_rate, args.gaze_gaussian_sigma, args.gaze_fade, args.sample_clicks) + args.run_name
 
-    if args.run_name == "":
-        wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_numval%d" % (ENCODER, args.middle_only, args.use_rgb,
-                    args.instseg_channels, args.secs_of_history, 
-                    args.history_sample_rate, args.gaze_gaussian_sigma, args.gaze_fade, args.num_val_episodes)
-    else:
-        wandb_run_name = args.run_name 
     if args.wandb:
         wandb.init(
             # set the wandb project where this run will be logged
@@ -186,14 +165,19 @@ def main(args):
         # do something (save model, change lr, etc.)
         if max_score < train_logs['iou_score']:
             max_score = train_logs['iou_score']
-            torch.save(model, 
-                './best_model_%s.pth' 
-                % wandb_run_name)
-            print('Model saved!')
+            if args.wandb:
+                torch.save(model,
+                    os.path.join(wandb.run.dir, './best_model_%s.pth' 
+                    % wandb_run_name))
+            else:
+                torch.save(model, 
+                    './best_model_%s.pth' 
+                    % wandb_run_name)
+
             
-        if i == 10:
-            optimizer.param_groups[0]['lr'] = 1e-5
-            print('Decrease decoder learning rate to 1e-5!')
+        if i > 0 and i % args.lr_decay_epochstep == 0:
+            optimizer.param_groups[0]['lr'] /= 10
+            print('Decimating decoder learning rate to %f' % optimizer.param_groups[0]['lr'])
 
 
     # ## Test best saved model
@@ -217,14 +201,19 @@ if __name__ == "__main__":
     args.add_argument("--raw-data", type=str, default='/media/storage/raw_data_corrected')
     args.add_argument("--use-rgb", action='store_true')
     args.add_argument("--instseg-channels", type=int, default=2)
-    args.add_argument("--middle-only", action='store_false')
+    args.add_argument("--middle-andsides", action='store_false')
     args.add_argument("--secs-of-history", type=float, default=5.0)
     args.add_argument("--history-sample-rate", type=float, default=4.0)
     args.add_argument("--gaze-gaussian-sigma", type=float, default=10.0)
     args.add_argument("--gaze-fade", action='store_true')
+    args.add_argument("--lr-decay-epochstep", type=int, default=10)
+    args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
+                      default='', help="Empty string -> sample everything")
+    # empty string is sample everything
 
     # training params
     args.add_argument("--device", type=str, default='cuda')
+    args.add_argument("--random-seed", type=int, default=999)
     args.add_argument("--num-workers", type=int, default=12)
     args.add_argument("--batch-size", type=int, default=16)
     args.add_argument("--num-val-episodes", type=int, default=5)
@@ -235,4 +224,4 @@ if __name__ == "__main__":
     args.add_argument("--run-name", type=str, default="")    
     args = args.parse_args()
 
-    main(args)
+    main(args)    

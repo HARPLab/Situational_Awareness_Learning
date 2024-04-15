@@ -85,11 +85,13 @@ def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41, ga
             if center_pixel[0] < -1 or center_pixel[1] < -1:
                 continue
             # fade gaze from 255 to gaze_fade_min linearly based on time
+            # most recent gaze is gaze_points[0]
             mask[0, center_pixel[1], center_pixel[0]] = int(gaze_fade_min + gaze_fade_step*(N-i))
 
     # convolve the mask with a gaussian kernel    
     heatmap = TF.gaussian_blur(mask, kernel_size, sigma)
-    heatmap[heatmap > 0] = 255
+    if not gaze_fade:
+        heatmap[heatmap > 0] = 255
 
     # heatmap_image = Image.fromarray(heatmap.numpy().squeeze())
     # heatmap_image.save('heatmap.png')
@@ -110,7 +112,6 @@ def read_corrected_csv(path):
     visible_total = corrected_labels_df['visible_total'].apply(eval).apply(np.array).to_numpy()
     visible_is = corrected_labels_df['visible_is'].apply(eval).apply(np.array).to_numpy()
     awareness_label = corrected_labels_df['awareness_label'].apply(eval).apply(np.array).to_numpy()
-    awareness_label = corrected_labels_df['awareness_label'].apply(eval).apply(np.array).to_numpy()
     
     
     data = {'frame_no': frame_no,
@@ -127,7 +128,7 @@ class SituationalAwarenessDataset(Dataset):
         self.episode = episode
         self.rgb_frame_delay = 3
         self.use_rgb = args.use_rgb
-        self.middle_only = args.middle_only
+        self.middle_andsides = args.middle_andsides
         self.instseg_channels = args.instseg_channels
         self.images_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images"))
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
@@ -141,14 +142,26 @@ class SituationalAwarenessDataset(Dataset):
         corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
         self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
 
+        
+        if self.args.sample_clicks:
+            # max time allowed since last click for valid sample
+            self.sample_clicks_min_time = 10 #self.args.secs_of_history                
+            # skip samples just before click (to account for reaction time)
+            self.pre_clicks_excl_time = 1
+
+            # precompute userinput frame nos
+            user_input_arr = np.array(self.awareness_df.AwarenessData_UserInput)
+            user_input_locs = np.nonzero(user_input_arr)[0] # returning 
+            user_input_diffs = np.diff(user_input_locs)
+            user_input_diffs = np.insert(user_input_diffs, 0, user_input_locs[0])
+            self.user_input_locs = user_input_locs[user_input_diffs > 7] # 6 clicks occur together for one press
+            self.prev_click_idx = 0
+            self.prev_click_time = self.awareness_df.iloc[self.user_input_locs[self.prev_click_idx]]['TimeElapsed']
+            self.next_click_idx = 0
+            self.next_click_time = self.awareness_df.iloc[self.user_input_locs[self.next_click_idx]]['TimeElapsed']
 
         index_mapping = {}
         idx = 0
-        # if self.episode == "cbdr10-23": #REMOVE THIS LATER
-        #     images_dirs.append(Path(os.path.join(self.raw_data_dir, e, "images")))
-        #     aw_df_file_name = os.path.join(self.raw_data_dir, e, 'rec_parse-awdata.json')
-        #     aw_df_e = pd.read_json(aw_df_file_name, orient='index')
-        #     awareness_dfs.append(aw_df_e)
             
         instance_seg_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images", "instance_segmentation_output"))
         label_correction_end_buffer = -50
@@ -157,22 +170,72 @@ class SituationalAwarenessDataset(Dataset):
         first_valid_idx = self.awareness_df[self.awareness_df["TimeElapsed"] > secs_of_history].index[0]
         class_distribution = np.array([0,0])
         skip_ctr = 0
+
         # start from above index here
         for i in range(first_valid_idx, len(instance_seg_imgs)):
             file_name = instance_seg_imgs[i] # '000001.png' for example where 1 is the frame num
             frame_num = int(file_name.split('.')[0])        
+
             # check that target (label mask) is not empty
-            cur_row = self.corrected_labels_df.iloc[frame_num - self.rgb_frame_delay]
-            actor_IDs = cur_row['visible_is']
+            # corrected df idcs 1 removed from aw df
+            cur_corrected_row = self.corrected_labels_df.iloc[frame_num - self.rgb_frame_delay - 1]            
+            actor_IDs = cur_corrected_row['visible_is']
             valid_vis = actor_IDs != 0
             num_objs_vis = np.sum(valid_vis)
             if num_objs_vis == 0:
                 skip_ctr += 1
                 continue
+
+            # if we want to sample only around clicks, 
+            if self.args.sample_clicks:                
+                # find previous and next click
+                # idx = np.searchsorted(self.user_input_locs, frame_num - self.rgb_frame_delay)
+                # returned index i satisfies a[i-1] < v <= a[i]
+
+                cur_click_time = self.awareness_df.iloc[frame_num - self.rgb_frame_delay]['TimeElapsed']
+                
+                if cur_click_time > self.next_click_time:
+                    self.prev_click_idx = self.next_click_idx
+                    self.prev_click_time = self.next_click_time
+                    
+                    if self.next_click_idx == len(self.user_input_locs)-1:
+                        pass
+                    else:
+                        self.next_click_idx += 1
+                        self.next_click_time = self.awareness_df.iloc[self.user_input_locs[self.next_click_idx]]['TimeElapsed']                    
+
+                if self.args.sample_clicks == 'both':
+                    if self.next_click_time - cur_click_time < self.pre_clicks_excl_time:
+                        if cur_click_time - self.prev_click_time < self.sample_clicks_min_time: # okay even if this is negative
+                            # sample
+                            pass
+                        else:
+                            skip_ctr +=1
+                            continue
+                    elif cur_click_time - self.prev_click_time >= self.sample_clicks_min_time:
+                        # sample
+                        skip_ctr +=1
+                        continue
+                elif self.args.sample_clicks == 'post_click':
+                    if cur_click_time - self.prev_click_time < self.sample_clicks_min_time: # okay even if this is negative
+                        # sample
+                        pass
+                    else:
+                        skip_ctr +=1
+                        continue
+                elif self.args.sample_clicks == 'pre_excl':
+                    if self.next_click_time - cur_click_time < self.pre_clicks_excl_time:                
+                        skip_ctr +=1
+                        continue
+                    else:
+                        # sample
+                        pass
+
+            # calculate aware/unaware distribution
             valid_actors = actor_IDs[valid_vis]
-            vis_total = cur_row['visible_total']
+            vis_total = cur_corrected_row['visible_total']
             vis_idcs_forlabel = np.in1d(vis_total, valid_actors)
-            cur_awlabels = cur_row['awareness_label'][vis_idcs_forlabel]            
+            cur_awlabels = cur_corrected_row['awareness_label'][vis_idcs_forlabel]            
             num_vis_aware = np.count_nonzero(cur_awlabels)
             num_vis_unaware = cur_awlabels.size - num_vis_aware
             class_distribution += [num_vis_unaware, num_vis_aware]
@@ -205,13 +268,13 @@ class SituationalAwarenessDataset(Dataset):
         # init data paths
         if self.use_rgb:        
             rgb_image = Image.open(self.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
-            if not self.middle_only:
+            if not self.middle_andsides:
                 rgb_left_image = Image.open(self.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
                 rgb_right_image = Image.open(self.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
              
 
         instance_seg_image = Image.open(self.images_dir / 'instance_segmentation_output' / ('%.6d.png' % frame_num)).convert('RGB')
-        if not self.middle_only:
+        if not self.middle_andsides:
             instance_seg_left_image = Image.open(self.images_dir / 'instance_segmentation_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
             instance_seg_right_image = Image.open(self.images_dir / 'instance_segmentation_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
 
@@ -227,28 +290,28 @@ class SituationalAwarenessDataset(Dataset):
         with open("%s/offset.txt" % self.images_dir, 'r') as file:
             offset = int(file.read()) 
         
-        # full_label_mask = self.get_full_label_mask(instance_seg_image, id_list, offset, aw_visible, aw_answer, user_input)
-        full_label_mask = self.get_corrected_label_mask(instance_seg_image, visible_total, awareness_label)
-        if not self.middle_only:
-            full_label_mask_left = self.get_corrected_label_mask(instance_seg_left_image, visible_total, awareness_label)
-            full_label_mask_right = self.get_corrected_label_mask(instance_seg_right_image, visible_total, awareness_label)
+        # full_label_mask = self.get_full_label_mask(instance_seg_image, id_list, offset, aw_visible, aw_answer, user_input)        
+        full_label_mask = self.get_corrected_label_mask(instance_seg_image, visible_total, awareness_label, offset=offset)
+        if not self.middle_andsides:
+            full_label_mask_left = self.get_corrected_label_mask(instance_seg_left_image, visible_total, awareness_label, offset=offset)
+            full_label_mask_right = self.get_corrected_label_mask(instance_seg_right_image, visible_total, awareness_label, offset=offset)
         # label_mask_image = Image.fromarray(full_label_mask)
 
         # Construct gaze heatmap
         raw_gaze_mid= []
-        if not self.middle_only:
+        if not self.middle_andsides:
             raw_gaze_left = []
             raw_gaze_right = []
         
-        current_time = self.awareness_df["TimeElapsed"][frame_num]
+        current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
         end_time = current_time - self.secs_of_history
         history_frames = []
         history_frame_times = []
         i = 0
         frame = frame_num - i - 1
-        while frame > 0 and self.awareness_df["TimeElapsed"][frame] > end_time:
+        while frame > 0 and self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] > end_time:
             history_frames.append(frame)
-            history_frame_times.append(self.awareness_df["TimeElapsed"][frame])
+            history_frame_times.append(self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay])
             frame = frame_num - i - 1
             i+=1
         
@@ -261,15 +324,16 @@ class SituationalAwarenessDataset(Dataset):
         raw_gaze_mid, raw_gaze_left, raw_gaze_right = np.zeros((total_history_frames+1, 2), dtype=np.int32)-1,  \
                                                         np.zeros((total_history_frames+1, 2), dtype=np.int32)-1, \
                                                         np.zeros((total_history_frames+1, 2), dtype=np.int32)-1
-        while frame > 0 and step != total_history_frames:
+        while frame - self.rgb_frame_delay > 0 and step != total_history_frames:
 
-            target_time = self.awareness_df["TimeElapsed"][frame] - frame_time*step
+            target_time = self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] - frame_time*step
             closest_frame_indices_ranking = np.argsort(abs(np.array(history_frame_times)-target_time))
             closest_frame_ranking = [history_frames[i] for i in closest_frame_indices_ranking]
             
             closest_frame = 0
             for f in range(len(closest_frame_ranking)):
-                if os.path.exists(self.images_dir / 'instance_segmentation_output' / ('%.6d.png' % closest_frame_ranking[f])):
+                if os.path.exists(self.images_dir / 'instance_segmentation_output' / \
+                                  ('%.6d.png' % (closest_frame_ranking[f] + self.rgb_frame_delay))):
                     closest_frame = closest_frame_ranking[f]
                     break
             step += 1
@@ -287,7 +351,7 @@ class SituationalAwarenessDataset(Dataset):
             if pts_mid[0] >= 0 and pts_mid[0] < instance_seg_image.width and \
                 pts_mid[1] >= 0 and pts_mid[1] < instance_seg_image.height:
                 raw_gaze_mid[step,:] = pts_mid
-            if not self.middle_only:
+            if not self.middle_andsides:
                 if pts_left[0] >= 0 and pts_left[0] < instance_seg_left_image.width and \
                     pts_left[1] >= 0 and pts_left[1] < instance_seg_left_image.height:
                     raw_gaze_left[step,:] = pts_left
@@ -296,7 +360,7 @@ class SituationalAwarenessDataset(Dataset):
                     raw_gaze_right[step,:] = pts_right
 
         gaze_heatmap = gaussian_contour_plot(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
-        if not self.middle_only:
+        if not self.middle_andsides:
             gaze_heatmap_left = gaussian_contour_plot(np.array(instance_seg_left_image), 
                                                       raw_gaze_left, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
             gaze_heatmap_right = gaussian_contour_plot(np.array(instance_seg_right_image), 
@@ -305,21 +369,21 @@ class SituationalAwarenessDataset(Dataset):
         # Convert all images to tensors
         if self.use_rgb:
             rgb_image = transforms.functional.to_tensor(rgb_image)
-            if not self.middle_only:
+            if not self.middle_andsides:
                 rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
                 rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
         instance_seg_image = transforms.functional.to_tensor(instance_seg_image)[:self.instseg_channels, :, : ] # only read the r and g channel
-        if not self.middle_only:
+        if not self.middle_andsides:
             instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)[:self.instseg_channels, :, : ]
             instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)[:self.instseg_channels, :, : ]
         
         label_mask_image = transforms.functional.to_tensor(full_label_mask)
-        if not self.middle_only:
+        if not self.middle_andsides:
             label_mask_image_left = transforms.functional.to_tensor(full_label_mask_left)
             label_mask_image_right = transforms.functional.to_tensor(full_label_mask_right)
 
         if self.use_rgb:
-            if not self.middle_only:
+            if not self.middle_andsides:
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap, 
                                 rgb_left_image, instance_seg_left_image, gaze_heatmap_left, 
                                 rgb_right_image, instance_seg_right_image, gaze_heatmap_right)
@@ -327,14 +391,14 @@ class SituationalAwarenessDataset(Dataset):
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap)
 
         else:
-            if not self.middle_only:
+            if not self.middle_andsides:
                 input_images = (instance_seg_image, gaze_heatmap, 
                                 instance_seg_left_image, gaze_heatmap_left, 
                                 instance_seg_right_image, gaze_heatmap_right)
             else:
                 input_images = (instance_seg_image, gaze_heatmap)
         final_input_image = torch.cat(input_images)
-        if not self.middle_only:
+        if not self.middle_andsides:
             final_label_mask_image = torch.cat((label_mask_image, label_mask_image_left, label_mask_image_right))
         else:
             final_label_mask_image = label_mask_image
@@ -344,7 +408,7 @@ class SituationalAwarenessDataset(Dataset):
 
         return padded_tensor, padded_label_mask_image_tensor
     
-    def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels):
+    def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels, offset):
         width, height = inst_img.size
         num_channels = 2 # aware, not aware
         mask = np.zeros((height, width, num_channels), dtype=np.uint8)
@@ -356,11 +420,12 @@ class SituationalAwarenessDataset(Dataset):
         sum_bg = (b * 256) + g
         
         for id_idx, id in enumerate(visible_ids):
+            run_id = id - offset
             if awareness_labels[id_idx] == 1:
                 # Create a mask where sum_bg is equal to target_value
-                mask[sum_bg == int(id), 0] = 255
+                mask[sum_bg == int(run_id), 0] = 255
             else:
-                mask[sum_bg == int(id), 1] = 255
+                mask[sum_bg == int(run_id), 1] = 255
         
         return mask
     
