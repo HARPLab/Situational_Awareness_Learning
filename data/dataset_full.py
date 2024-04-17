@@ -142,6 +142,7 @@ class SituationalAwarenessDataset(Dataset):
         corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
         self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
 
+        self.clicked_frame_dict = get_clicked_frame_dict(self.corrected_labels_df)
         
         if self.args.sample_clicks:
             # max time allowed since last click for valid sample
@@ -279,10 +280,10 @@ class SituationalAwarenessDataset(Dataset):
             instance_seg_right_image = Image.open(self.images_dir / 'instance_segmentation_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
 
         # Label mask generation
-        id_list = self.awareness_df["AwarenessData_Visible"][frame_num-self.rgb_frame_delay]
-        aw_visible = self.awareness_df["AwarenessData_Visible"][frame_num-self.rgb_frame_delay]
-        user_input = self.awareness_df["AwarenessData_UserInput"][frame_num-self.rgb_frame_delay]
-        aw_answer = self.awareness_df["AwarenessData_Answer"][frame_num-self.rgb_frame_delay]
+        # id_list = self.awareness_df["AwarenessData_Visible"][frame_num-self.rgb_frame_delay]
+        # aw_visible = self.awareness_df["AwarenessData_Visible"][frame_num-self.rgb_frame_delay]
+        # user_input = self.awareness_df["AwarenessData_UserInput"][frame_num-self.rgb_frame_delay]
+        # aw_answer = self.awareness_df["AwarenessData_Answer"][frame_num-self.rgb_frame_delay]
 
         visible_total = self.corrected_labels_df['visible_total'][frame_num-self.rgb_frame_delay - 1] # -1 because corrected df is one frame shifted from awareness df
         awareness_label = self.corrected_labels_df['awareness_label'][frame_num-self.rgb_frame_delay - 1] # -1 because corrected df is one frame shifted from awareness df
@@ -296,6 +297,19 @@ class SituationalAwarenessDataset(Dataset):
             full_label_mask_left = self.get_corrected_label_mask(instance_seg_left_image, visible_total, awareness_label, offset=offset)
             full_label_mask_right = self.get_corrected_label_mask(instance_seg_right_image, visible_total, awareness_label, offset=offset)
         # label_mask_image = Image.fromarray(full_label_mask)
+
+        if self.args.ignore_oldclicks:
+            ignore_mask = self.get_ignore_mask(instance_seg_image, visible_total, awareness_label, offset=offset)
+            if not self.middle_andsides:
+                ignore_mask_left = self.get_ignore_mask(instance_seg_left_image, visible_total, awareness_label, offset=offset)
+                ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset=offset)
+        else:
+            ignore_mask = np.ones_like(full_label_mask)
+            if not self.middle_andsides:
+                ignore_mask_left = np.ones_like(full_label_mask_left)
+                ignore_mask_right = np.ones_like(full_label_mask_right)
+        
+
 
         # Construct gaze heatmap
         raw_gaze_mid= []
@@ -382,6 +396,11 @@ class SituationalAwarenessDataset(Dataset):
             label_mask_image_left = transforms.functional.to_tensor(full_label_mask_left)
             label_mask_image_right = transforms.functional.to_tensor(full_label_mask_right)
 
+        ignore_mask = transforms.functional.to_tensor(ignore_mask)
+        if not self.middle_andsides:
+            ignore_mask_left = transforms.functional.to_tensor(ignore_mask_left)
+            ignore_mask_right = transforms.functional.to_tensor(ignore_mask_right)
+
         if self.use_rgb:
             if not self.middle_andsides:
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap, 
@@ -402,12 +421,39 @@ class SituationalAwarenessDataset(Dataset):
             final_label_mask_image = torch.cat((label_mask_image, label_mask_image_left, label_mask_image_right))
         else:
             final_label_mask_image = label_mask_image
+        
+        if not self.middle_andsides:
+            final_ignore_mask = torch.cat((ignore_mask, ignore_mask_left, ignore_mask_right))
+        else:
+            final_ignore_mask = ignore_mask
+
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
+        padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask, (0, 0, 4, 4), mode='constant', value=0)
 
-
-        return padded_tensor, padded_label_mask_image_tensor
+        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
     
+    def get_ignore_mask(self, inst_img, visible_ids, awareness_labels, offset, frame_num):
+        width, height = inst_img.size
+        num_channels = 2 # aware, not aware
+        mask = np.ones((height, width, num_channels), dtype=np.uint8)
+        raw_img = np.array(inst_img)
+        b = raw_img[:, :, 2]
+        g = raw_img[:, :, 1]
+        # Calculate the sum of b*256 + g
+        sum_bg = (b * 256) + g
+        
+        for id_idx, id in enumerate(visible_ids):
+            run_id = id - offset
+            if awareness_labels[id_idx] == 1:
+                clicked_frame = self.clicked_frame_dict[run_id]
+                if frame_num - clicked_frame > self.click_recency_threshold:
+                # Create a mask where sum_bg is equal to target_value
+                    mask[sum_bg == int(run_id), 0] = 0
+                    mask[sum_bg == int(run_id), 1] = 0
+        
+        return mask
+
     def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels, offset):
         width, height = inst_img.size
         num_channels = 2 # aware, not aware

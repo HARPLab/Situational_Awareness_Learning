@@ -13,6 +13,8 @@ import segmentation_models_pytorch as smp
 from segmentation_models_pytorch import utils as smp_utils
 import argparse 
 import wandb
+sys.path.add('./models/')
+from train import *
    
 
 # helper function for data visualization
@@ -132,7 +134,7 @@ def main(args):
 
     # create epoch runners 
     # it is a simple loop of iterating over dataloader`s samples
-    train_epoch = smp_utils.train.TrainEpoch(
+    train_epoch = TrainEpoch(
         model, 
         loss=loss, 
         metrics=metrics, 
@@ -141,7 +143,7 @@ def main(args):
         verbose=True,
     )
 
-    valid_epoch = smp_utils.train.ValidEpoch(
+    valid_epoch = ValidEpoch(
         model, 
         loss=loss, 
         metrics=metrics, 
@@ -209,6 +211,7 @@ if __name__ == "__main__":
     args.add_argument("--lr-decay-epochstep", type=int, default=10)
     args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
                       default='', help="Empty string -> sample everything")
+    args.add_argument("--ignore-oldclicks", action='store_true')
     # empty string is sample everything
 
     # training params
