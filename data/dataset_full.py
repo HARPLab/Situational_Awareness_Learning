@@ -169,7 +169,6 @@ class SituationalAwarenessDataset(Dataset):
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
         self.args = args
-        self.click_recency_threshold = 100 # 5 sec 20 Hz frequency
 
         secs_of_history = args.secs_of_history
         sample_rate = args.history_sample_rate
@@ -480,6 +479,12 @@ class SituationalAwarenessDataset(Dataset):
         # Calculate the sum of b*256 + g
         sum_bg = (b * 256) + g
         
+        current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
+        end_time = current_time - self.secs_of_history
+        frame = frame_num
+        while frame > 0 and self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] > end_time:
+            frame -= 1
+        
         for id_idx, id in enumerate(visible_ids):
             run_id = id - offset
             if awareness_labels[id_idx] == 1:
@@ -488,7 +493,7 @@ class SituationalAwarenessDataset(Dataset):
                     temp_arr = frame_num - np.array(clicked_frame_history)
                     if len(temp_arr[temp_arr >= 0]) > 0:
                         min_val = np.min(temp_arr[temp_arr >= 0])    
-                        if frame_num - min_val > self.click_recency_threshold:
+                        if frame_num - min_val > frame_num - frame:
                         # Create a mask where sum_bg is equal to target_value
                             mask[sum_bg == int(run_id), 0] = 0
                             mask[sum_bg == int(run_id), 1] = 0
