@@ -121,6 +121,41 @@ def read_corrected_csv(path):
 
     return pd.DataFrame(data)
 
+def get_clicked_frame_dict(corrected_labels_df):
+    clicked_frame_dict = {}
+    for i, row in corrected_labels_df.iterrows():
+        visible_total = row['visible_total']
+        awareness_label = row['awareness_label']
+        # print(visible_total, awareness_label)
+        for ind, actor_id in enumerate(visible_total):
+            # check if actor has been clicked before
+            if actor_id not in clicked_frame_dict:
+                # if not, and the actor is aware, put it in the dict and set the visible + clicked status to 1
+                if awareness_label[ind] == 1:    
+                    clicked_frame_dict[actor_id] = [[row['frame_no']], 1]
+                # if not, and the actor is unaware, do not put it in the dict
+            else:
+                # if the actor is in the dict, check if the actor is aware
+                if awareness_label[ind] == 1:
+                    # if the actor is aware, check if the actor's visible and clicked status is 0
+                    if clicked_frame_dict[actor_id][1] == 0:
+                        # if it is, append the frame number to the list of click times and set the visible + clicked status to 1
+                        clicked_frame_dict[actor_id][0].append(row['frame_no'])
+                        clicked_frame_dict[actor_id][1] = 1
+                else:
+                    # if the actor is unaware, check if the actor's visible and clicked status is 1
+                    if clicked_frame_dict[actor_id][1] == 1:
+                        # if it is, set the visible + clicked status to 0
+                        clicked_frame_dict[actor_id][1] = 0
+
+    # for actors in the dict that are not in visible_is, set visible + clicked status to 0    
+    for clicked_actor in clicked_frame_dict:
+        if clicked_actor not in visible_total:
+            clicked_frame_dict[clicked_actor][1] = 0
+
+    return clicked_frame_dict
+
+
 class SituationalAwarenessDataset(Dataset):
     #def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
     def __init__(self, raw_data, sensor_config, episode, args):
@@ -134,9 +169,11 @@ class SituationalAwarenessDataset(Dataset):
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
         self.args = args
+        self.click_recency_threshold = 100 # 5 sec 20 Hz frequency
 
         secs_of_history = args.secs_of_history
         sample_rate = args.history_sample_rate
+        
         gaussian_sigma = args.gaze_gaussian_sigma
         
         corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
@@ -299,10 +336,10 @@ class SituationalAwarenessDataset(Dataset):
         # label_mask_image = Image.fromarray(full_label_mask)
 
         if self.args.ignore_oldclicks:
-            ignore_mask = self.get_ignore_mask(instance_seg_image, visible_total, awareness_label, offset=offset)
+            ignore_mask = self.get_ignore_mask(instance_seg_image, visible_total, awareness_label, offset, frame_num)
             if not self.middle_andsides:
-                ignore_mask_left = self.get_ignore_mask(instance_seg_left_image, visible_total, awareness_label, offset=offset)
-                ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset=offset)
+                ignore_mask_left = self.get_ignore_mask(instance_seg_left_image, visible_total, awareness_label, offset, frame_num)
+                ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset, frame_num)
         else:
             ignore_mask = np.ones_like(full_label_mask)
             if not self.middle_andsides:
@@ -446,12 +483,15 @@ class SituationalAwarenessDataset(Dataset):
         for id_idx, id in enumerate(visible_ids):
             run_id = id - offset
             if awareness_labels[id_idx] == 1:
-                clicked_frame = self.clicked_frame_dict[run_id]
-                if frame_num - clicked_frame > self.click_recency_threshold:
-                # Create a mask where sum_bg is equal to target_value
-                    mask[sum_bg == int(run_id), 0] = 0
-                    mask[sum_bg == int(run_id), 1] = 0
-        
+                if run_id+offset in self.clicked_frame_dict:
+                    clicked_frame_history = self.clicked_frame_dict[run_id + offset][0] # clicked frame dict is in the awareness_df frame of reference
+                    temp_arr = frame_num - np.array(clicked_frame_history)
+                    if len(temp_arr[temp_arr >= 0]) > 0:
+                        min_val = np.min(temp_arr[temp_arr >= 0])    
+                        if frame_num - min_val > self.click_recency_threshold:
+                        # Create a mask where sum_bg is equal to target_value
+                            mask[sum_bg == int(run_id), 0] = 0
+                            mask[sum_bg == int(run_id), 1] = 0
         return mask
 
     def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels, offset):

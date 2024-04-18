@@ -13,8 +13,8 @@ import segmentation_models_pytorch as smp
 from segmentation_models_pytorch import utils as smp_utils
 import argparse 
 import wandb
-sys.path.add('./models/')
-from train import *
+sys.path.insert(0, './models/')
+from custom_train import *
    
 
 # helper function for data visualization
@@ -78,9 +78,11 @@ def main(args):
     torch.manual_seed(args.random_seed)
     np.random.seed(args.random_seed)
     np.random.shuffle(episode_list)
-    train_episodes = episode_list[:-num_val_episodes]
+    # train_episodes = episode_list[:-num_val_episodes]
+    train_episodes = [episode_list[0]]
     print("Train routes:", train_episodes)
-    val_episodes = episode_list[-num_val_episodes:]
+    # val_episodes = episode_list[-num_val_episodes:]
+    val_episodes = [episode_list[0]]
     print("Val routes:", val_episodes)
 
     wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,

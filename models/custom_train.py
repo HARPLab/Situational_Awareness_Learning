@@ -47,9 +47,9 @@ class Epoch:
             file=sys.stdout,
             disable=not (self.verbose),
         ) as iterator:
-            for x, y in iterator:
-                x, y = x.to(self.device), y.to(self.device)
-                loss, y_pred = self.batch_update(x, y)
+            for x, y, mask in iterator:
+                x, y, mask = x.to(self.device), y.to(self.device), mask.to(self.device)
+                loss, y_pred = self.batch_update(x, y, mask)
 
                 # update loss logs
                 loss_value = loss.cpu().detach().numpy()
@@ -86,10 +86,10 @@ class TrainEpoch(Epoch):
     def on_epoch_start(self):
         self.model.train()
 
-    def batch_update(self, x, y):
+    def batch_update(self, x, y, mask):
         self.optimizer.zero_grad()
         prediction = self.model.forward(x)
-        loss = self.loss(prediction, y)
+        loss = self.loss(prediction*mask, y*mask)
         loss.backward()
         self.optimizer.step()
         return loss, prediction
@@ -109,7 +109,7 @@ class ValidEpoch(Epoch):
     def on_epoch_start(self):
         self.model.eval()
 
-    def batch_update(self, x, y):
+    def batch_update(self, x, y, mask):
         with torch.no_grad():
             prediction = self.model.forward(x)
             loss = self.loss(prediction, y)
