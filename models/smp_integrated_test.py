@@ -7,7 +7,7 @@ home_folder = os.path.expanduser('~')
 sys.path.insert(0, os.path.join(home_folder, 'Situational_Awareness_Learning'))
 from data.dataset_full import SituationalAwarenessDataset
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 import numpy as np
 import segmentation_models_pytorch as smp
 from segmentation_models_pytorch import utils as smp_utils
@@ -99,9 +99,11 @@ def main(args):
         )
 
     train_data = []
+    concat_sample_weights = []
     for ep in train_episodes:
         dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
         train_data.append(dataset)
+        concat_sample_weights += dataset.get_sample_weights()
     train_dataset = torch.utils.data.ConcatDataset(train_data)
 
 
@@ -111,8 +113,10 @@ def main(args):
         valid_data.append(dataset)
     valid_dataset = torch.utils.data.ConcatDataset(valid_data)
 
-
-    train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
+    weighted_sampler = WeightedRandomSampler(weights=concat_sample_weights,
+                                             num_samples=len(train_dataset),
+                                             replacement=True)
+    train_loader = DataLoader(train_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
     valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
 
 

@@ -1,6 +1,6 @@
 import torch
 import carla
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler, BatchSampler
 from torchvision import transforms
 from pathlib import Path
 from PIL import Image
@@ -121,6 +121,41 @@ def read_corrected_csv(path):
 
     return pd.DataFrame(data)
 
+class SABalancedSampler(BatchSampler):
+    """
+    Samples elements from our imbalanced SA dataset
+    We sample the same number of frames with unaware objects as with only unaware objects
+    Not currently supported
+    """
+    def __init__(self, source_dataset, batch_size):
+        raise NotImplementedError
+        self.dataset = source_dataset
+        self.unaware_indices = self.dataset.obj_unaware_dict.keys()
+        self.aware_indices = set(self.dataset.obj_aware_dict.keys())
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        unaware_batch_size = self.batch_size // 2
+        aware_batch_size = self.batch_size - unaware_batch_size
+
+        # Oversample unaware class
+        while len(self.aware_indices) >= aware_batch_size:
+            # Sample remaining aware indices
+            aware_idcs_batch = np.randperm.choice(list(self.aware_indices))
+            self.aware_indices -= set(aware_idcs_batch)            
+
+            # get matching num of unaware idcs
+            unaware_idcs_batch = np.random.choice(self.unaware_indices, size=unaware_batch_size, replace=False)        
+            batch = aware_idcs_batch + unaware_idcs_batch            
+            # np.random.shuffle(batch)
+            yield batch
+
+        # if we are in the remainder of batches:
+        batch = []
+
+    def __len__(self):
+        return len(self.data_source.index_mapping)
+
 class SituationalAwarenessDataset(Dataset):
     #def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
     def __init__(self, raw_data, sensor_config, episode, args):
@@ -135,9 +170,12 @@ class SituationalAwarenessDataset(Dataset):
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
         self.args = args
 
-        secs_of_history = args.secs_of_history
-        sample_rate = args.history_sample_rate
-        gaussian_sigma = args.gaze_gaussian_sigma
+        self.sensor_config = configparser.ConfigParser()
+        self.sensor_config.read(sensor_config)
+        self.secs_of_history = args.secs_of_history 
+        self.sample_rate = args.history_sample_rate
+        self.gaussian_sigma = args.gaze_gaussian_sigma
+
         
         corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
         self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
@@ -161,17 +199,21 @@ class SituationalAwarenessDataset(Dataset):
             self.next_click_time = self.awareness_df.iloc[self.user_input_locs[self.next_click_idx]]['TimeElapsed']
 
         index_mapping = {}
+        self.class_counts_dict = {}        
+        self.obj_aware_dict = {}
+        self.obj_unaware_dict = {}
+
         idx = 0
             
         instance_seg_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images", "instance_segmentation_output"))
         label_correction_end_buffer = -50
         instance_seg_imgs = sorted(os.listdir(instance_seg_dir), key = lambda x: int(x.split('.')[0]))[:label_correction_end_buffer]
         
-        first_valid_idx = self.awareness_df[self.awareness_df["TimeElapsed"] > secs_of_history].index[0]
+        first_valid_idx = self.awareness_df[self.awareness_df["TimeElapsed"] > self.secs_of_history].index[0]
         class_distribution = np.array([0,0])
         skip_ctr = 0
 
-        # start from above index here
+        # start from above index here and create index mapping to frames
         for i in range(first_valid_idx, len(instance_seg_imgs)):
             file_name = instance_seg_imgs[i] # '000001.png' for example where 1 is the frame num
             frame_num = int(file_name.split('.')[0])        
@@ -239,25 +281,49 @@ class SituationalAwarenessDataset(Dataset):
             num_vis_aware = np.count_nonzero(cur_awlabels)
             num_vis_unaware = cur_awlabels.size - num_vis_aware
             class_distribution += [num_vis_unaware, num_vis_aware]
+        
+            if num_vis_unaware > 0:
+                self.obj_unaware_dict[idx] = num_vis_unaware 
+            else:
+                self.obj_aware_dict[idx] = num_vis_aware
+            self.class_counts_dict[idx] = [num_vis_unaware, num_vis_aware]
 
             # add valid frame to index mapping
-            index_mapping[idx] = frame_num
-
+            index_mapping[idx] = frame_num            
             idx += 1
         
         self.index_mapping = index_mapping
-        #print(self.index_mapping)
-        
-        #self.images_dir = Path(images_dir)
-        self.sensor_config = configparser.ConfigParser()
-        self.sensor_config.read(sensor_config)
-        #self.awareness_df = awareness_df
-        self.secs_of_history = secs_of_history 
-        self.sample_rate = sample_rate
-        self.gaussian_sigma = gaussian_sigma
+
+        self.sample_weights = self._calc_sample_weights()
+
         print("Class distribution for episode %s: %s" % (self.episode, class_distribution))
+        print("Num frames with atleast 1 unaware: %d, fully aware: %d" % (len(self.obj_unaware_dict), len(self.obj_aware_dict)))
         print("Number of frames skipped: %d" % skip_ctr)
     
+    def _calc_sample_weights(self, data_balance_type='object'):
+        """
+        We use databalancing at the object or pixel level to ensure good representation of unaware data
+        """
+        if data_balance_type=="object":
+            unaware_batch_split = 0.5
+            aware_batch_split = 1 - unaware_batch_split
+            unaware_images_weight = unaware_batch_split / len(self.obj_unaware_dict)
+            aware_images_weight = aware_batch_split / len(self.obj_aware_dict)
+            weights = []
+            for idx in self.index_mapping.keys():
+                num_vis_unaware, num_vis_aware =  self.class_counts_dict[idx]
+                if num_vis_unaware > 0:
+                    weights +=[unaware_images_weight]
+                else:
+                    weights +=[aware_images_weight]                                
+
+            return weights
+        else:
+            raise NotImplementedError        
+
+    def get_sample_weights(self):
+        return self.sample_weights
+
     def __getitem__(self, idx):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
         # (read in raw gaze and construct heatmap in get_item itself), label mask image

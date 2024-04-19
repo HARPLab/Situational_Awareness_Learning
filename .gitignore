@@ -7,7 +7,7 @@
 wandb/
 
 # Byte-compiled / optimized / DLL files
-__pycache__/
+__pycache__*
 *.py[cod]
 *$py.class
 
@@ -168,3 +168,4 @@ cython_debug/
 #.idea/
 mambafdqLiQjRCZf
 *.pyc
+data/__pycache__/dataset_full.cpython-37.pyc
