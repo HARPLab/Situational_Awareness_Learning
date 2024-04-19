@@ -13,6 +13,8 @@ import segmentation_models_pytorch as smp
 from segmentation_models_pytorch import utils as smp_utils
 import argparse 
 import wandb
+sys.path.insert(0, './models/')
+from custom_train import *
    
 
 # helper function for data visualization
@@ -76,9 +78,11 @@ def main(args):
     torch.manual_seed(args.random_seed)
     np.random.seed(args.random_seed)
     np.random.shuffle(episode_list)
-    train_episodes = episode_list[:-num_val_episodes]
+    # train_episodes = episode_list[:-num_val_episodes]
+    train_episodes = [episode_list[0]]
     print("Train routes:", train_episodes)
-    val_episodes = episode_list[-num_val_episodes:]
+    # val_episodes = episode_list[-num_val_episodes:]
+    val_episodes = [episode_list[0]]
     print("Val routes:", val_episodes)
 
     wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,
@@ -136,7 +140,7 @@ def main(args):
 
     # create epoch runners 
     # it is a simple loop of iterating over dataloader`s samples
-    train_epoch = smp_utils.train.TrainEpoch(
+    train_epoch = TrainEpoch(
         model, 
         loss=loss, 
         metrics=metrics, 
@@ -145,7 +149,7 @@ def main(args):
         verbose=True,
     )
 
-    valid_epoch = smp_utils.train.ValidEpoch(
+    valid_epoch = ValidEpoch(
         model, 
         loss=loss, 
         metrics=metrics, 
@@ -213,6 +217,7 @@ if __name__ == "__main__":
     args.add_argument("--lr-decay-epochstep", type=int, default=10)
     args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
                       default='', help="Empty string -> sample everything")
+    args.add_argument("--ignore-oldclicks", action='store_true')
     # empty string is sample everything
 
     # training params
