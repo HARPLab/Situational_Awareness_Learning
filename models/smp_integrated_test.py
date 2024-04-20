@@ -78,9 +78,11 @@ def main(args):
     torch.manual_seed(args.random_seed)
     np.random.seed(args.random_seed)
     np.random.shuffle(episode_list)
-    train_episodes = episode_list[:-num_val_episodes]    
+    train_episodes = episode_list[:-num_val_episodes]   
+    # train_episodes = [episode_list[0]] 
     print("Train routes:", train_episodes)
-    val_episodes = episode_list[-num_val_episodes:]    
+    val_episodes = episode_list[-num_val_episodes:]
+    # val_episodes = [episode_list[0]] 
     print("Val routes:", val_episodes)
 
     wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,
@@ -110,9 +112,11 @@ def main(args):
 
 
     valid_data = []
+    concat_val_sample_weights = []
     for ep in val_episodes:
         dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
         valid_data.append(dataset)
+        concat_val_sample_weights += dataset.get_sample_weights()
     valid_dataset = torch.utils.data.ConcatDataset(valid_data)
 
     if args.weighted_unaware_sampling:
@@ -123,7 +127,9 @@ def main(args):
     else:
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
     
-    valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
+    weighted_sampler = WeightedRandomSampler(weights=concat_val_sample_weights, num_samples=len(valid_dataset), replacement=True)
+    # valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
+    valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
 
 
     # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient

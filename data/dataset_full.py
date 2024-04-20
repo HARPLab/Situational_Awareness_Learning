@@ -202,6 +202,7 @@ class SituationalAwarenessDataset(Dataset):
         self.instseg_channels = args.instseg_channels
         self.images_dir = Path(os.path.join(self.raw_data_dir, self.episode, "images"))
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
+        
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
         self.args = args
 
@@ -411,7 +412,6 @@ class SituationalAwarenessDataset(Dataset):
             if not self.middle_andsides:
                 ignore_mask_left = np.ones_like(full_label_mask_left)
                 ignore_mask_right = np.ones_like(full_label_mask_right)
-        
 
 
         # Construct gaze heatmap
@@ -485,7 +485,7 @@ class SituationalAwarenessDataset(Dataset):
         
         # Convert all images to tensors
         if self.use_rgb:
-            rgb_image = transforms.functional.to_tensor(rgb_image)
+            rgb_image = transforms.functional.to_tensor(rgb_image) # only use this function to convert PIL images to tensors, normalizes between 0 and 1
             if not self.middle_andsides:
                 rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
                 rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
@@ -499,10 +499,10 @@ class SituationalAwarenessDataset(Dataset):
             label_mask_image_left = transforms.functional.to_tensor(full_label_mask_left)
             label_mask_image_right = transforms.functional.to_tensor(full_label_mask_right)
 
-        ignore_mask = transforms.functional.to_tensor(ignore_mask)
+        ignore_mask = torch.from_numpy(ignore_mask)
         if not self.middle_andsides:
-            ignore_mask_left = transforms.functional.to_tensor(ignore_mask_left)
-            ignore_mask_right = transforms.functional.to_tensor(ignore_mask_right)
+            ignore_mask_left = torch.from_numpy(ignore_mask_left)
+            ignore_mask_right = torch.from_numpy(ignore_mask_right)
 
         if self.use_rgb:
             if not self.middle_andsides:
@@ -530,10 +530,12 @@ class SituationalAwarenessDataset(Dataset):
         else:
             final_ignore_mask = ignore_mask
 
+        
+
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
-        padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask, (0, 0, 4, 4), mode='constant', value=0)
-
+        padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
+        
         return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
     
     def get_ignore_mask(self, inst_img, visible_ids, awareness_labels, offset, frame_num):

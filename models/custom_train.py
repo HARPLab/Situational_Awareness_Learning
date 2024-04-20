@@ -1,6 +1,7 @@
 import sys
 import torch
 from tqdm import tqdm as tqdm
+import numpy as np
 from segmentation_models_pytorch import utils as smp_utils
 # from smp.meter import AverageValueMeter
 
@@ -47,8 +48,13 @@ class Epoch:
             file=sys.stdout,
             disable=not (self.verbose),
         ) as iterator:
+            i = 0
             for x, y, mask in iterator:
                 x, y, mask = x.to(self.device), y.to(self.device), mask.to(self.device)
+                # if i % 10 == 0:
+                #     np.save('model_inputs_viz/'+ self.stage_name + '_x_{}.npy'.format(i), x.cpu().detach().numpy())
+                #     np.save('model_inputs_viz/'+ self.stage_name + '_mask_{}.npy'.format(i), mask.cpu().detach().numpy())
+                # i+=1
                 loss, y_pred = self.batch_update(x, y, mask)
 
                 # update loss logs
