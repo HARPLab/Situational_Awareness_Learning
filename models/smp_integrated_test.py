@@ -78,11 +78,9 @@ def main(args):
     torch.manual_seed(args.random_seed)
     np.random.seed(args.random_seed)
     np.random.shuffle(episode_list)
-    # train_episodes = episode_list[:-num_val_episodes]
-    train_episodes = [episode_list[0]]
+    train_episodes = episode_list[:-num_val_episodes]    
     print("Train routes:", train_episodes)
-    # val_episodes = episode_list[-num_val_episodes:]
-    val_episodes = [episode_list[0]]
+    val_episodes = episode_list[-num_val_episodes:]    
     print("Val routes:", val_episodes)
 
     wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,
@@ -117,10 +115,14 @@ def main(args):
         valid_data.append(dataset)
     valid_dataset = torch.utils.data.ConcatDataset(valid_data)
 
-    weighted_sampler = WeightedRandomSampler(weights=concat_sample_weights,
-                                             num_samples=len(train_dataset),
-                                             replacement=True)
-    train_loader = DataLoader(train_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
+    if args.weighted_unaware_sampling:
+        weighted_sampler = WeightedRandomSampler(weights=concat_sample_weights,
+                                                num_samples=len(train_dataset),
+                                                replacement=True)
+        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
+    
     valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
 
 
@@ -219,6 +221,7 @@ if __name__ == "__main__":
                       default='', help="Empty string -> sample everything")
     args.add_argument("--ignore-oldclicks", action='store_true')
     # empty string is sample everything
+    args.add_argument("--weighted-unaware-sampling", action='store_true')
 
     # training params
     args.add_argument("--device", type=str, default='cuda')

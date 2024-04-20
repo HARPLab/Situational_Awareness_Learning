@@ -294,6 +294,7 @@ class SituationalAwarenessDataset(Dataset):
                         # sample
                         skip_ctr +=1
                         continue
+
                 elif self.args.sample_clicks == 'post_click':
                     if cur_click_time - self.prev_click_time < self.sample_clicks_min_time: # okay even if this is negative
                         # sample
@@ -301,13 +302,14 @@ class SituationalAwarenessDataset(Dataset):
                     else:
                         skip_ctr +=1
                         continue
+
                 elif self.args.sample_clicks == 'pre_excl':
                     if self.next_click_time - cur_click_time < self.pre_clicks_excl_time:                
                         skip_ctr +=1
                         continue
                     else:
                         # sample
-                        pass
+                        pass                
 
             # calculate aware/unaware distribution
             valid_actors = actor_IDs[valid_vis]
@@ -546,19 +548,19 @@ class SituationalAwarenessDataset(Dataset):
         
         current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
         end_time = current_time - self.secs_of_history
-        frame = frame_num
-        while frame > 0 and self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] > end_time:
-            frame -= 1
+        frame_histsecs_ago = frame_num
+        while frame_histsecs_ago > 0 and self.awareness_df["TimeElapsed"][frame_histsecs_ago - self.rgb_frame_delay] > end_time:
+            frame_histsecs_ago -= 1
         
         for id_idx, id in enumerate(visible_ids):
             run_id = id - offset
             if awareness_labels[id_idx] == 1:
-                if run_id+offset in self.clicked_frame_dict:
-                    clicked_frame_history = self.clicked_frame_dict[run_id + offset][0] # clicked frame dict is in the awareness_df frame of reference
+                if id in self.clicked_frame_dict:
+                    clicked_frame_history = self.clicked_frame_dict[id][0] # clicked frame dict is in the awareness_df frame of reference
                     temp_arr = frame_num - np.array(clicked_frame_history)
                     if len(temp_arr[temp_arr >= 0]) > 0:
-                        min_val = np.min(temp_arr[temp_arr >= 0])    
-                        if frame_num - min_val > frame_num - frame:
+                        most_recent_click = np.min(temp_arr[temp_arr >= 0])    
+                        if most_recent_click > frame_num - frame_histsecs_ago:
                         # Create a mask where sum_bg is equal to target_value
                             mask[sum_bg == int(run_id), 0] = 0
                             mask[sum_bg == int(run_id), 1] = 0
