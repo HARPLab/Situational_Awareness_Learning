@@ -6,7 +6,7 @@
     "configurations": [
         {
             "name": "Python: Current File with profiler",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "cProfile",
             "args": [
@@ -28,11 +28,49 @@
             "request": "launch",
             "program": "${workspaceFolder}/models/smp_integrated_test.py",
             "console": "integratedTerminal",
-            "args": [
+            "args": [   "--wandb",
+                        "--num-workers", "0",
+                        "--raw-data", "/home/harpadmin/raw_data_tiny",
+                        "--num-val-episodes", "1",
+                        "--sample-clicks", "pre_excl",
+                        "--batch-size", "24",
+                        "--ignore-oldclicks",
+                        "--instseg-channels", "1",                        
+                        "--unfix-valset",
+                        "--seg-mode", "multiclass",
+                        "--unaware-classwt", "20"
+                    ],
+            "env": {"CUDA_VISIBLE_DEVICES": "1"}
+        },
+        {
+            "name": "generate_outputs",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/models/generate_outputs.py",
+            "console": "integratedTerminal",
+            "args": [   "--wandb",
                         "--num-workers", "12",
-                        "--raw-data", "/home/harpadmin/raw_data_corrected"
+                        "--raw-data", "/home/harpadmin/raw_data_tiny",
+                        "--num-val-episodes", "1",
+                        "--sample-clicks", "pre_excl",
+                        "--batch-size", "24",
+                        "--ignore-oldclicks",
+                        "--instseg-channels", "1"
                     ]
             // "args": "${command:pickArgs}"
+        },
+        {
+            "name": "pixel_dist_gen",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/data/pixel_dist_generation.py",
+            "console": "integratedTerminal",
+            "args": [   
+                        "--raw-data", "/home/harpadmin/raw_data_tiny",
+                    ],
+            "env": {"PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "6"}
+            // "args": "${command:pickArgs}"
         }
+
     ]
 }

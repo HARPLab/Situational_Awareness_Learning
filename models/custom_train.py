@@ -63,6 +63,10 @@ class Epoch:
                 loss_logs = {self.loss.__name__: loss_meter.mean}
                 logs.update(loss_logs)
 
+                # for metric computation, use masked prediction and GT
+                y_pred = y_pred*mask
+                y = y*mask
+
                 # update metrics logs
                 for metric_fn in self.metrics:
                     metric_value = metric_fn(y_pred, y).cpu().detach().numpy()
@@ -118,5 +122,5 @@ class ValidEpoch(Epoch):
     def batch_update(self, x, y, mask):
         with torch.no_grad():
             prediction = self.model.forward(x)
-            loss = self.loss(prediction, y)
+            loss = self.loss(prediction*mask, y*mask)
         return loss, prediction

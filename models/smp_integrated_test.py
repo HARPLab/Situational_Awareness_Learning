@@ -14,43 +14,18 @@ from segmentation_models_pytorch import utils as smp_utils
 import argparse 
 import wandb
 sys.path.insert(0, './models/')
-from custom_train import *
+from custom_train import ValidEpoch, TrainEpoch
+from dice_loss import DiceLoss   
+
    
-
-# helper function for data visualization
-def visualize(**images):
-    """PLot images in one row."""
-    n = len(images)
-    plt.figure(figsize=(16, 5))
-    for i, (name, image) in enumerate(images.items()):
-        plt.subplot(1, n, i + 1)
-        plt.xticks([])
-        plt.yticks([])
-        plt.title(' '.join(name.split('_')).title())
-        plt.imshow(image)
-    plt.show()
-
-def visualize_all(**images):
-    fig, axs = plt.subplots(4, 3, figsize=(10, 10))
-    axs = axs.flatten()
-    
-    for i, (name, image) in enumerate(images.items()):
-        axs[i].imshow(image)
-        axs[i].axis('off')
-        axs[i].set_title(name)
-    
-    # Hide remaining axes
-    for j in range(len(images), 12):
-        axs[j].axis('off')
-    
-    plt.tight_layout()
-    plt.show()
-
-
-
 def main(args):
     ENCODER = args.encoder
-    CLASSES = ['aware', 'not_aware']
+    if args.seg_mode == 'multiclass':
+        CLASSES = ['aware', 'not_aware']
+        class_weights = [1, args.unaware_classwt, args.bg_classwt]
+    elif args.seg_mode == 'multilabel':
+        CLASSES = ['aware', 'not_aware', 'bg']
+        class_weights = [1, args.unaware_classwt]
     ACTIVATION = args.activation # could be None for logits or 'softmax2d' for multiclass segmentation
     DEVICE = args.device
 
@@ -67,27 +42,27 @@ def main(args):
         in_channels=in_channels,
     )
 
-    #preprocessing_fn = smp.encoders.get_preprocessing_fn(ENCODER, ENCODER_WEIGHTS)
-
-    # episode_list = sorted(os.listdir(args.raw_data), reverse=True)
     episode_list = sorted(os.listdir(args.raw_data), reverse=False)
     num_val_episodes = args.num_val_episodes
-    # train_episodes, val_episodes, test_episodes = data.split_train_val_test(episode_list, 0.8, 0.1, 0.1) # NOTE: DOUBLE CHECK THIS
     
     # set random seed and shuffle dataset
     torch.manual_seed(args.random_seed)
     np.random.seed(args.random_seed)
     np.random.shuffle(episode_list)
-    train_episodes = episode_list[:-num_val_episodes]   
-    # train_episodes = [episode_list[0]] 
-    print("Train routes:", train_episodes)
-    val_episodes = episode_list[-num_val_episodes:]
-    # val_episodes = [episode_list[0]] 
-    print("Val routes:", val_episodes)
+    if args.unfix_valset:
+        train_episodes = episode_list[:-num_val_episodes]   
+        print("Train routes:", train_episodes)
+        val_episodes = episode_list[-num_val_episodes:]
+        print("Val routes:", val_episodes)
+    else:
+        # hard code val routes to keep things comparable
+        val_episodes = ["cbdr8-54" , "cbdr9-23", "cbdr6-41", "abd-21"]
+        train_episodes = list(set(episode_list) - set(val_episodes))
 
-    wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,
-            args.instseg_channels, args.secs_of_history, 
-            args.history_sample_rate, args.gaze_gaussian_sigma, args.gaze_fade, args.sample_clicks) + args.run_name
+    wandb_run_name = "%s_m%s_rgb%s_seg%d_mode_%s_sh%.1f@%.1f_gf%s_sample_%s_wus%s_ioc%s" % (ENCODER, args.middle_andsides,
+                            args.use_rgb, args.instseg_channels, args.seg_mode,
+                            args.secs_of_history, args.history_sample_rate,
+                            args.gaze_fade, args.sample_clicks, args.weighted_unaware_sampling, args.ignore_oldclicks) + args.run_name
 
     if args.wandb:
         wandb.init(
@@ -102,6 +77,8 @@ def main(args):
             name=wandb_run_name      
         )
 
+
+    #region: Load data
     train_data = []
     concat_sample_weights = []
     for ep in train_episodes:
@@ -126,16 +103,24 @@ def main(args):
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
     else:
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
-    
-    weighted_sampler = WeightedRandomSampler(weights=concat_val_sample_weights, num_samples=len(valid_dataset), replacement=True)
-    # valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
-    valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
+        
+    valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
+    #endregion
 
 
     # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
     # IoU/Jaccard score - https://en.wikipedia.org/wiki/Jaccard_index
 
-    loss = smp_utils.losses.DiceLoss()
+    # define loss function
+    # unaware class is weighted more heavily
+    if args.unaware_classwt < 1.0:
+        import warnings
+        warnings.warn("Warning...........Unaware class weight is less than 1.0. This is not recommended.")
+        
+    loss = DiceLoss(args.seg_mode, classes=[0, 1], log_loss=True,
+                    from_logits=True, smooth=0.0,
+                    ignore_index=None, eps=1e-7, class_weights=class_weights)
+
     metrics = [
         smp_utils.metrics.IoU(threshold=0.5),
     ]
@@ -143,8 +128,6 @@ def main(args):
     optimizer = torch.optim.Adam([ 
         dict(params=model.parameters(), lr=args.lr),
     ])
-
-
 
     # create epoch runners 
     # it is a simple loop of iterating over dataloader`s samples
@@ -174,13 +157,15 @@ def main(args):
         train_logs = train_epoch.run(train_loader)
         valid_logs = valid_epoch.run(valid_loader)
         
-        for k in train_logs:
-            wandb.log({"train_"+k: train_logs[k]})
-        for k in valid_logs:
-            wandb.log({"valid_"+k: valid_logs[k]})
+        if args.wandb:
+            for k in train_logs:
+                wandb.log({"train_"+k: train_logs[k]})
+            for k in valid_logs:
+                wandb.log({"valid_"+k: valid_logs[k]})
+
         # do something (save model, change lr, etc.)
-        if max_score < train_logs['iou_score']:
-            max_score = train_logs['iou_score']
+        if max_score < valid_logs['iou_score']:
+            max_score = valid_logs['iou_score']
             if args.wandb:
                 torch.save(model,
                     os.path.join(wandb.run.dir, './best_model_%s.pth' 
@@ -207,11 +192,13 @@ if __name__ == "__main__":
 
     args = argparse.ArgumentParser()
     # model params
-    args.add_argument("--encoder", type=str, default='mobilenet_v2')
-    args.add_argument("--encoder-weights", type=str, default='imagenet')
+    args.add_argument("--encoder", type=str, default='mobilenet_v2')    
+    args.add_argument("--encoder-weights", choices=['imagenet', 'swsl', 'ssl', 'instagram', None], default=None)
     # args.add_argument("--classes", type=str, default='car')
-    args.add_argument("--activation", type=str, default='sigmoid')
-    
+    # new dice loss does activation in the loss function
+    args.add_argument("--activation", choices=[None], default=None)    
+    args.add_argument("--seg-mode", choices=['binary', 'multiclass', 'multilabel'], default='multiclass')
+
     # data set config params
     args.add_argument("--sensor-config-file", type=str, default='sensor_config.ini')
     args.add_argument("--raw-data", type=str, default='/media/storage/raw_data_corrected')
@@ -228,6 +215,8 @@ if __name__ == "__main__":
     args.add_argument("--ignore-oldclicks", action='store_true')
     # empty string is sample everything
     args.add_argument("--weighted-unaware-sampling", action='store_true')
+    args.add_argument("--unaware-classwt", type=float, default=1.0)
+    args.add_argument("--bg-classwt", type=float, default=1e-5)
 
     # training params
     args.add_argument("--device", type=str, default='cuda')
@@ -238,6 +227,7 @@ if __name__ == "__main__":
     args.add_argument("--num-epochs", type=int, default=40)
     args.add_argument("--lr", type=float, default=0.0001)
     args.add_argument("--wandb", action='store_false')
+    args.add_argument("--unfix-valset", action='store_true')
     
     args.add_argument("--run-name", type=str, default="")    
     args = args.parse_args()

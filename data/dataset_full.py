@@ -155,6 +155,17 @@ def get_clicked_frame_dict(corrected_labels_df):
 
     return clicked_frame_dict
 
+def extract_relevant_objects(instance_seg_image, args):
+    # only include vehicles, pedestrians, and 2 wheelers in the instseg mask
+    relevant_object_values = [4,  # vehicles 
+                              10, # pedestrians + pedestrian part of 2 wheelers
+                              23] # vehicle part of 2 wheelers
+    width, height = instance_seg_image.size
+    mask = np.zeros((height, width, 1), dtype=np.uint8)
+    instance_seg_image_r = np.array(instance_seg_image)[:, :, 0]
+    for obj_val in relevant_object_values:
+        mask[instance_seg_image_r == obj_val] = 255
+    return mask
 
 class SABalancedSampler(BatchSampler):
     """
@@ -193,7 +204,7 @@ class SABalancedSampler(BatchSampler):
 
 class SituationalAwarenessDataset(Dataset):
     #def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
-    def __init__(self, raw_data, sensor_config, episode, args):
+    def __init__(self, raw_data, sensor_config, episode, args):        
         self.raw_data_dir = Path(raw_data)
         self.episode = episode
         self.rgb_frame_delay = 3
@@ -218,6 +229,8 @@ class SituationalAwarenessDataset(Dataset):
 
         self.clicked_frame_dict = get_clicked_frame_dict(self.corrected_labels_df)
         
+        print(self.episode)
+
         if self.args.sample_clicks:
             # max time allowed since last click for valid sample
             self.sample_clicks_min_time = 10 #self.args.secs_of_history                
@@ -354,14 +367,125 @@ class SituationalAwarenessDataset(Dataset):
                 if num_vis_unaware > 0:
                     weights +=[unaware_images_weight]
                 else:
-                    weights +=[aware_images_weight]                                
-
+                    weights +=[aware_images_weight]
+            
+            assert np.isclose(sum(weights), 1, atol= 1e-5)
+            
             return weights
         else:
             raise NotImplementedError        
 
     def get_sample_weights(self):
         return self.sample_weights
+
+    
+    def get_ignore_mask(self, inst_img, visible_ids, awareness_labels, offset, frame_num):
+        width, height = inst_img.size
+        num_channels = 2 # aware, not aware
+        mask = np.ones((height, width, num_channels), dtype=np.uint8)
+        raw_img = np.array(inst_img)
+        b = raw_img[:, :, 2]
+        g = raw_img[:, :, 1]
+        # Calculate the sum of b*256 + g
+        sum_bg = (b * 256) + g
+        
+        current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
+        end_time = current_time - self.secs_of_history
+        frame_histsecs_ago = frame_num
+        while frame_histsecs_ago > 0 and self.awareness_df["TimeElapsed"][frame_histsecs_ago - self.rgb_frame_delay] > end_time:
+            frame_histsecs_ago -= 1
+        
+        for id_idx, id in enumerate(visible_ids):
+            run_id = id - offset
+            if awareness_labels[id_idx] == 1:
+                if id in self.clicked_frame_dict:
+                    clicked_frame_history = self.clicked_frame_dict[id][0] # clicked frame dict is in the awareness_df frame of reference
+                    temp_arr = frame_num - np.array(clicked_frame_history)
+                    if len(temp_arr[temp_arr >= 0]) > 0:
+                        most_recent_click = np.min(temp_arr[temp_arr >= 0])    
+                        if most_recent_click > frame_num - frame_histsecs_ago:
+                        # Create a mask where sum_bg is equal to target_value
+                            mask[sum_bg == int(run_id), 0] = 0
+                            mask[sum_bg == int(run_id), 1] = 0
+        return mask
+
+    def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels, offset):
+        width, height = inst_img.size
+        if self.args.seg_mode == 'multiclass':
+            num_channels = 3 # aware, not aware, background/ignore
+        elif self.args.seg_mode == 'multilabel':
+            num_channels = 2 # aware, not aware
+        mask = np.zeros((height, width, num_channels), dtype=np.uint8)
+        #mask = np.zeros((width, height))
+        raw_img = np.array(inst_img)
+        b = raw_img[:, :, 2]
+        g = raw_img[:, :, 1]
+        # Calculate the sum of b*256 + g
+        sum_bg = (b * 256) + g
+        
+        for id_idx, id in enumerate(visible_ids):
+            run_id = id - offset
+            if awareness_labels[id_idx] == 1:
+                # Create a mask where sum_bg is equal to target_value
+                mask[sum_bg == int(run_id), 0] = 255
+            else:
+                mask[sum_bg == int(run_id), 1] = 255
+        
+        if self.args.seg_mode == 'multiclass': # background channel
+            mask[np.sum(mask[...,:2], axis=2) == 0, 2] = 255
+            mask = np.argmax(mask, axis=2)
+        
+        return mask
+    
+    def get_full_label_mask(self, inst_img, id_list, offset, aw_visible, aw_answer, user_input, type_bit=16):
+        width, height = inst_img.size
+        mask = np.zeros((height, width), dtype=np.uint8)
+        #mask = np.zeros((width, height))
+        raw_img = np.array(inst_img)
+        b = raw_img[:, :, 2]
+        g = raw_img[:, :, 1]
+        # Calculate the sum of b*256 + g
+        sum_bg = (b * 256) + g
+        
+        for id in id_list:
+            run_id = id - offset
+            id_idx = aw_visible.index(id)
+            label = False
+            if (user_input & type_bit == aw_answer[id_idx] & type_bit) and (user_input & aw_answer[id_idx]):
+                label = True
+            if label == True:
+                # Create a mask where sum_bg is equal to target_value
+                mask[sum_bg==run_id] = 100
+            else:
+                mask[sum_bg==run_id] = 200
+        
+        return mask
+
+    def get_gaze_point(self, focus_hit_pt, loc, rot):
+        FOV = int(self.sensor_config['rgb']['fov'])
+        w = int(self.sensor_config['rgb']['width'])
+        h = int(self.sensor_config['rgb']['height'])
+        F = w / (2 * np.tan(FOV * np.pi / 360))
+
+        cam_info = {
+            'w' : w,
+            'h' : h,
+            'fy' : F,
+            'fx' : 1.0 * F,
+        }
+
+        K = np.array([
+        [cam_info['fx'], 0, cam_info['w']/2],
+        [0, cam_info['fy'], cam_info['h']/2],
+        [0, 0, 1]])
+        
+        focus_hit_pt_scaled = np.array(focus_hit_pt.squeeze())/100 # conversion cm to m 
+        vehicle_loc = carla.Location(*(loc.squeeze()))/100
+        vehicle_rot = carla.Rotation(*(rot.squeeze()))
+        vehicle_transform = carla.Transform(location=vehicle_loc, rotation=vehicle_rot)
+
+        return world2pixels(focus_hit_pt_scaled, vehicle_transform, K, self.sensor_config)
+
 
     def __getitem__(self, idx):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
@@ -377,7 +501,6 @@ class SituationalAwarenessDataset(Dataset):
                 rgb_left_image = Image.open(self.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
                 rgb_right_image = Image.open(self.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
              
-
         instance_seg_image = Image.open(self.images_dir / 'instance_segmentation_output' / ('%.6d.png' % frame_num)).convert('RGB')
         if not self.middle_andsides:
             instance_seg_left_image = Image.open(self.images_dir / 'instance_segmentation_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
@@ -489,10 +612,21 @@ class SituationalAwarenessDataset(Dataset):
             if not self.middle_andsides:
                 rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
                 rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
-        instance_seg_image = transforms.functional.to_tensor(instance_seg_image)[:self.instseg_channels, :, : ] # only read the r and g channel
-        if not self.middle_andsides:
-            instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)[:self.instseg_channels, :, : ]
-            instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)[:self.instseg_channels, :, : ]
+        
+        # change instance segmentation images
+        if self.instseg_channels == 1:
+            instance_seg_image = extract_relevant_objects(instance_seg_image, self.args)
+            instance_seg_image = transforms.functional.to_tensor(instance_seg_image)
+            if not self.middle_andsides:
+                instance_seg_left_image = extract_relevant_objects(instance_seg_left_image, self.args)
+                instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)
+                instance_seg_right_image = extract_relevant_objects(instance_seg_right_image, self.args)
+                instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)
+        if self.instseg_channels > 1:
+            instance_seg_image = transforms.functional.to_tensor(instance_seg_image)[:self.instseg_channels, :, :]
+            if not self.middle_andsides:
+                instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)[:self.instseg_channels, :, :]
+                instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)[:self.instseg_channels, :, :]
         
         label_mask_image = transforms.functional.to_tensor(full_label_mask)
         if not self.middle_andsides:
@@ -530,117 +664,13 @@ class SituationalAwarenessDataset(Dataset):
         else:
             final_ignore_mask = ignore_mask
 
-        
 
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
         
         return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
-    
-    def get_ignore_mask(self, inst_img, visible_ids, awareness_labels, offset, frame_num):
-        width, height = inst_img.size
-        num_channels = 2 # aware, not aware
-        mask = np.ones((height, width, num_channels), dtype=np.uint8)
-        raw_img = np.array(inst_img)
-        b = raw_img[:, :, 2]
-        g = raw_img[:, :, 1]
-        # Calculate the sum of b*256 + g
-        sum_bg = (b * 256) + g
-        
-        current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
-        end_time = current_time - self.secs_of_history
-        frame_histsecs_ago = frame_num
-        while frame_histsecs_ago > 0 and self.awareness_df["TimeElapsed"][frame_histsecs_ago - self.rgb_frame_delay] > end_time:
-            frame_histsecs_ago -= 1
-        
-        for id_idx, id in enumerate(visible_ids):
-            run_id = id - offset
-            if awareness_labels[id_idx] == 1:
-                if id in self.clicked_frame_dict:
-                    clicked_frame_history = self.clicked_frame_dict[id][0] # clicked frame dict is in the awareness_df frame of reference
-                    temp_arr = frame_num - np.array(clicked_frame_history)
-                    if len(temp_arr[temp_arr >= 0]) > 0:
-                        most_recent_click = np.min(temp_arr[temp_arr >= 0])    
-                        if most_recent_click > frame_num - frame_histsecs_ago:
-                        # Create a mask where sum_bg is equal to target_value
-                            mask[sum_bg == int(run_id), 0] = 0
-                            mask[sum_bg == int(run_id), 1] = 0
-        return mask
-
-    def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels, offset):
-        width, height = inst_img.size
-        num_channels = 2 # aware, not aware
-        mask = np.zeros((height, width, num_channels), dtype=np.uint8)
-        #mask = np.zeros((width, height))
-        raw_img = np.array(inst_img)
-        b = raw_img[:, :, 2]
-        g = raw_img[:, :, 1]
-        # Calculate the sum of b*256 + g
-        sum_bg = (b * 256) + g
-        
-        for id_idx, id in enumerate(visible_ids):
-            run_id = id - offset
-            if awareness_labels[id_idx] == 1:
-                # Create a mask where sum_bg is equal to target_value
-                mask[sum_bg == int(run_id), 0] = 255
-            else:
-                mask[sum_bg == int(run_id), 1] = 255
-        
-        return mask
-    
-    def get_full_label_mask(self, inst_img, id_list, offset, aw_visible, aw_answer, user_input, type_bit=16):
-        width, height = inst_img.size
-        mask = np.zeros((height, width), dtype=np.uint8)
-        #mask = np.zeros((width, height))
-        raw_img = np.array(inst_img)
-        b = raw_img[:, :, 2]
-        g = raw_img[:, :, 1]
-        # Calculate the sum of b*256 + g
-        sum_bg = (b * 256) + g
-        
-        for id in id_list:
-            run_id = id - offset
-            id_idx = aw_visible.index(id)
-            label = False
-            if (user_input & type_bit == aw_answer[id_idx] & type_bit) and (user_input & aw_answer[id_idx]):
-                label = True
-            if label == True:
-                # Create a mask where sum_bg is equal to target_value
-                mask[sum_bg==run_id] = 100
-            else:
-                mask[sum_bg==run_id] = 200
-        
-        return mask
-
-    def get_gaze_point(self, focus_hit_pt, loc, rot):
-        FOV = int(self.sensor_config['rgb']['fov'])
-        w = int(self.sensor_config['rgb']['width'])
-        h = int(self.sensor_config['rgb']['height'])
-        F = w / (2 * np.tan(FOV * np.pi / 360))
-
-        cam_info = {
-            'w' : w,
-            'h' : h,
-            'fy' : F,
-            'fx' : 1.0 * F,
-        }
-
-        K = np.array([
-        [cam_info['fx'], 0, cam_info['w']/2],
-        [0, cam_info['fy'], cam_info['h']/2],
-        [0, 0, 1]])
-        
-        focus_hit_pt_scaled = np.array(focus_hit_pt.squeeze())/100 # conversion cm to m 
-        vehicle_loc = carla.Location(*(loc.squeeze()))/100
-        vehicle_rot = carla.Rotation(*(rot.squeeze()))
-        vehicle_transform = carla.Transform(location=vehicle_loc, rotation=vehicle_rot)
-
-        return world2pixels(focus_hit_pt_scaled, vehicle_transform, K, self.sensor_config)
-
 
     def __len__(self):        
         return len(self.index_mapping)
 
-
-        
