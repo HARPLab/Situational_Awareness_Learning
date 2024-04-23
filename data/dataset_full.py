@@ -95,6 +95,9 @@ def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41, ga
 
     # heatmap_image = Image.fromarray(heatmap.numpy().squeeze())
     # heatmap_image.save('heatmap.png')
+    # this is already a tensor, so normalize it
+    heatmap = heatmap / 255
+    
     return heatmap
 
 def frame_filter(frame_num, awareness_df):
@@ -407,6 +410,10 @@ class SituationalAwarenessDataset(Dataset):
                         # Create a mask where sum_bg is equal to target_value
                             mask[sum_bg == int(run_id), 0] = 0
                             mask[sum_bg == int(run_id), 1] = 0
+        if self.args.seg_mode == 'multiclass':           
+            mask = mask[...,0]
+            mask = mask[..., None]
+
         return mask
 
     def get_corrected_label_mask(self, inst_img, visible_ids, awareness_labels, offset):
@@ -645,7 +652,6 @@ class SituationalAwarenessDataset(Dataset):
                                 rgb_right_image, instance_seg_right_image, gaze_heatmap_right)
             else:
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap)
-
         else:
             if not self.middle_andsides:
                 input_images = (instance_seg_image, gaze_heatmap, 

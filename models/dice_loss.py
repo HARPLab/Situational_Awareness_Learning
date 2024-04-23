@@ -76,7 +76,12 @@ class DiceLoss(_Loss):
         assert y_true.size(0) == y_pred.size(0)
         if self.class_weights is None:
             self.class_weights = [1 / y_true.size(1)] * y_true.size(1)
-        assert len(self.class_weights) == y_true.size(1)
+        if self.mode == MULTICLASS_MODE:
+            pass
+            # can't do: assert len(self.class_weights) == len(torch.unique(y_true))
+            # because y_true may not have all classes in the batch everytime
+        else:
+            assert len(self.class_weights) == y_true.size(1)
 
         if self.class_weights_tensor is None:
             # TODO: Add check if GPU or CPU
@@ -126,6 +131,7 @@ class DiceLoss(_Loss):
             else:
                 y_true = F.one_hot(y_true, num_classes)  # N,H*W -> N,H*W, C
                 y_true = y_true.permute(0, 2, 1)  # N, C, H*W
+            assert len(self.class_weights) == y_true.size(1)            
 
         if self.mode == MULTILABEL_MODE:
             y_true = y_true.view(bs, num_classes, -1)

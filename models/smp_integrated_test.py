@@ -20,12 +20,12 @@ from dice_loss import DiceLoss
    
 def main(args):
     ENCODER = args.encoder
-    if args.seg_mode == 'multiclass':
+    if args.seg_mode == 'multilabel':
         CLASSES = ['aware', 'not_aware']
-        class_weights = [1, args.unaware_classwt, args.bg_classwt]
-    elif args.seg_mode == 'multilabel':
-        CLASSES = ['aware', 'not_aware', 'bg']
         class_weights = [1, args.unaware_classwt]
+    elif args.seg_mode == 'multiclass':
+        CLASSES = ['aware', 'not_aware', 'bg']
+        class_weights = [1, args.unaware_classwt, args.bg_classwt]
     ACTIVATION = args.activation # could be None for logits or 'softmax2d' for multiclass segmentation
     DEVICE = args.device
 
