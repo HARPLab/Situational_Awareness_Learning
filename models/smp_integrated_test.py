@@ -164,8 +164,8 @@ def main(args):
                 wandb.log({"valid_"+k: valid_logs[k]})
 
         # do something (save model, change lr, etc.)
-        if max_score < valid_logs['iou_score']:
-            max_score = valid_logs['iou_score']
+        if max_score < train_logs['iou_score']:
+            max_score = train_logs['iou_score']
             if args.wandb:
                 torch.save(model,
                     os.path.join(wandb.run.dir, './best_model_%s.pth' 
@@ -174,6 +174,7 @@ def main(args):
                 torch.save(model, 
                     './best_model_%s.pth' 
                     % wandb_run_name)
+            print('Model saved with score %.4f! @ epoch %d' % (max_score, i))
 
             
         if i > 0 and i % args.lr_decay_epochstep == 0:

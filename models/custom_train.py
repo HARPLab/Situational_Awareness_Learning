@@ -3,6 +3,8 @@ import torch
 from tqdm import tqdm as tqdm
 import numpy as np
 from segmentation_models_pytorch import utils as smp_utils
+import torch.nn.functional as F
+
 # from smp.meter import AverageValueMeter
 
 
@@ -64,8 +66,14 @@ class Epoch:
                 logs.update(loss_logs)
 
                 # for metric computation, use masked prediction and GT
-                y_pred = y_pred*mask
-                y = y*mask
+                if self.loss.mode == 'multiclass':
+                    # print(y.shape)
+                    y = F.one_hot(y.view(y.shape[0], y.shape[2], y.shape[3]), num_classes=y_pred.size(1)).permute(0, 3, 1, 2).float()
+                    y_pred[:, 0, :, :] *= mask[:, 0, :, :] # only multiply with mask on the aware channel
+                    y[:, 0, :, :] *= mask[:, 0, :, :]
+                else:
+                    y_pred = y_pred*mask
+                    y = y*mask
 
                 # update metrics logs
                 for metric_fn in self.metrics:
@@ -99,7 +107,12 @@ class TrainEpoch(Epoch):
     def batch_update(self, x, y, mask):
         self.optimizer.zero_grad()
         prediction = self.model.forward(x)
-        loss = self.loss(prediction*mask, y*mask)
+        if self.loss.mode == 'multiclass':
+            prediction[:, 0, :, :] *= mask[:, 0, :, :] # only multiply with mask on the aware channel
+            y[:, 0, :, :] *= mask[:, 0, :, :]
+            loss = self.loss(prediction, y)
+        else:
+            loss = self.loss(prediction*mask, y*mask)
         loss.backward()
         self.optimizer.step()
         return loss, prediction
@@ -122,5 +135,10 @@ class ValidEpoch(Epoch):
     def batch_update(self, x, y, mask):
         with torch.no_grad():
             prediction = self.model.forward(x)
-            loss = self.loss(prediction*mask, y*mask)
+            if self.loss.mode == 'multiclass':
+                prediction[:, 0, :, :] *= mask[:, 0, :, :] # only multiply with mask on the aware channel
+                y[:, 0, :, :] *= mask[:, 0, :, :]
+                loss = self.loss(prediction, y)
+            else:
+                loss = self.loss(prediction*mask, y*mask)
         return loss, prediction

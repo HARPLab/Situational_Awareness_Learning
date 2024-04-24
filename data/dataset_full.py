@@ -538,10 +538,10 @@ class SituationalAwarenessDataset(Dataset):
                 ignore_mask_left = self.get_ignore_mask(instance_seg_left_image, visible_total, awareness_label, offset, frame_num)
                 ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset, frame_num)
         else:
-            ignore_mask = np.ones_like(full_label_mask)
+            ignore_mask = np.ones_like(full_label_mask)[..., np.newaxis]
             if not self.middle_andsides:
-                ignore_mask_left = np.ones_like(full_label_mask_left)
-                ignore_mask_right = np.ones_like(full_label_mask_right)
+                ignore_mask_left = np.ones_like(full_label_mask_left)[..., np.newaxis]
+                ignore_mask_right = np.ones_like(full_label_mask_right)[..., np.newaxis]
 
 
         # Construct gaze heatmap
