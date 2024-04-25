@@ -67,11 +67,21 @@ class Epoch:
 
                 # for metric computation, use masked prediction and GT
                 if self.loss.mode == 'multiclass':
-                    # print(y.shape)
+                    # need to activate the prediction for metric computation
+                    y_pred = y_pred.log_softmax(dim=1).exp()
+                    # make ground truth one-hot
+                    # N, 1, H, W -> N, C, H, W
                     y = F.one_hot(y.view(y.shape[0], y.shape[2], y.shape[3]), num_classes=y_pred.size(1)).permute(0, 3, 1, 2).float()
-                    y_pred[:, 0, :, :] *= mask[:, 0, :, :] # only multiply with mask on the aware channel
-                    y[:, 0, :, :] *= mask[:, 0, :, :]
+                    # multiply with mask to ignore old clicks
+                    y_pred *= mask 
+                    y *= mask
+                    # exclude background class for metric calculation+
+                    # sometimes this means for a pixel, GT/pred can be 0,0 which is fine
+                    y_pred = y_pred[:, :2,...]
+                    y = y[:, :2,...]
                 else:
+                    # need to activate the prediction for metric computation
+                    y_pred = F.logsigmoid(y_pred).exp()
                     y_pred = y_pred*mask
                     y = y*mask
 
@@ -107,12 +117,8 @@ class TrainEpoch(Epoch):
     def batch_update(self, x, y, mask):
         self.optimizer.zero_grad()
         prediction = self.model.forward(x)
-        if self.loss.mode == 'multiclass':
-            prediction[:, 0, :, :] *= mask[:, 0, :, :] # only multiply with mask on the aware channel
-            y[:, 0, :, :] *= mask[:, 0, :, :]
-            loss = self.loss(prediction, y)
-        else:
-            loss = self.loss(prediction*mask, y*mask)
+        # multiply with mask to ignore old clicks
+        loss = self.loss(prediction*mask, y*mask)
         loss.backward()
         self.optimizer.step()
         return loss, prediction
@@ -135,10 +141,6 @@ class ValidEpoch(Epoch):
     def batch_update(self, x, y, mask):
         with torch.no_grad():
             prediction = self.model.forward(x)
-            if self.loss.mode == 'multiclass':
-                prediction[:, 0, :, :] *= mask[:, 0, :, :] # only multiply with mask on the aware channel
-                y[:, 0, :, :] *= mask[:, 0, :, :]
-                loss = self.loss(prediction, y)
-            else:
-                loss = self.loss(prediction*mask, y*mask)
+            # multiply with mask to ignore old clicks
+            loss = self.loss(prediction*mask, y*mask)
         return loss, prediction

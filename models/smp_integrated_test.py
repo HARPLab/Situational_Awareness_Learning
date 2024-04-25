@@ -121,6 +121,9 @@ def main(args):
                     from_logits=True, smooth=0.0,
                     ignore_index=None, eps=1e-7, class_weights=class_weights)
 
+
+    # note: metric computations expect activated predictions
+    # we do activations in the loss function, so custom_train implements it prior to metric computation
     metrics = [
         smp_utils.metrics.IoU(threshold=0.5),
     ]
@@ -164,8 +167,8 @@ def main(args):
                 wandb.log({"valid_"+k: valid_logs[k]})
 
         # do something (save model, change lr, etc.)
-        if max_score < train_logs['iou_score']:
-            max_score = train_logs['iou_score']
+        if max_score < valid_logs['iou_score']:
+            max_score = valid_logs['iou_score']
             if args.wandb:
                 torch.save(model,
                     os.path.join(wandb.run.dir, './best_model_%s.pth' 
@@ -214,8 +217,8 @@ if __name__ == "__main__":
     args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
                       default='', help="Empty string -> sample everything")
     args.add_argument("--ignore-oldclicks", action='store_true')
-    # empty string is sample everything
-    args.add_argument("--weighted-unaware-sampling", action='store_true')
+    args.add_argument("--weighted-unaware-sampling", action='store_true', help="equally sample images with atleast one unaware obj and images with no unaware obj")
+    args.add_argument("--pre-clicks-excl-time", type=float, default=1.0, help="seconds before click to exclude for reaction time")
     args.add_argument("--unaware-classwt", type=float, default=1.0)
     args.add_argument("--bg-classwt", type=float, default=1e-5)
 

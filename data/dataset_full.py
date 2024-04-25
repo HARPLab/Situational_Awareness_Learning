@@ -236,9 +236,9 @@ class SituationalAwarenessDataset(Dataset):
 
         if self.args.sample_clicks:
             # max time allowed since last click for valid sample
-            self.sample_clicks_min_time = 10 #self.args.secs_of_history                
+            self.sample_clicks_min_time = self.args.secs_of_history                
             # skip samples just before click (to account for reaction time)
-            self.pre_clicks_excl_time = 1
+            self.pre_clicks_excl_time = self.args.pre_clicks_excl_time
 
             # precompute userinput frame nos
             user_input_arr = np.array(self.awareness_df.AwarenessData_UserInput)
@@ -669,7 +669,6 @@ class SituationalAwarenessDataset(Dataset):
             final_ignore_mask = torch.cat((ignore_mask, ignore_mask_left, ignore_mask_right))
         else:
             final_ignore_mask = ignore_mask
-
 
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
