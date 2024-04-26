@@ -71,7 +71,7 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
 def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41, gaze_fade=False):
     # Create a grid of coordinates
     height, width = rgb_image.shape[:2]
-    mask = torch.zeros((1, height, width), dtype=torch.uint8)
+    mask = torch.zeros((1, height, width), dtype=torch.float32)
 
     gaze_fade_min = 10    
     N = len(gaze_points)
@@ -89,14 +89,13 @@ def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41, ga
             mask[0, center_pixel[1], center_pixel[0]] = int(gaze_fade_min + gaze_fade_step*(N-i))
 
     # convolve the mask with a gaussian kernel    
+    # this also normalizes it
     heatmap = TF.gaussian_blur(mask, kernel_size, sigma)
     if not gaze_fade:
-        heatmap[heatmap > 0] = 255
+        heatmap[heatmap > 0] = 1
 
     # heatmap_image = Image.fromarray(heatmap.numpy().squeeze())
     # heatmap_image.save('heatmap.png')
-    # this is already a tensor, so normalize it
-    heatmap = heatmap / 255
     
     return heatmap
 
@@ -538,11 +537,15 @@ class SituationalAwarenessDataset(Dataset):
                 ignore_mask_left = self.get_ignore_mask(instance_seg_left_image, visible_total, awareness_label, offset, frame_num)
                 ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset, frame_num)
         else:
-            ignore_mask = np.ones_like(full_label_mask)[..., np.newaxis]
+            ignore_mask = np.ones_like(full_label_mask)
+            if ignore_mask.ndim == 2:
+                ignore_mask = ignore_mask[..., np.newaxis]
             if not self.middle_andsides:
                 ignore_mask_left = np.ones_like(full_label_mask_left)[..., np.newaxis]
                 ignore_mask_right = np.ones_like(full_label_mask_right)[..., np.newaxis]
-
+                if ignore_mask.ndim == 2:
+                    ignore_mask_left = ignore_mask_left[..., np.newaxis]
+                    ignore_mask_right = ignore_mask_right[..., np.newaxis]
 
         # Construct gaze heatmap
         raw_gaze_mid= []
