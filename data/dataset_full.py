@@ -68,7 +68,7 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     
     return pts_mid, pts_left, pts_right
 
-def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 41, gaze_fade=False):
+def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 61, gaze_fade=False):
     # Create a grid of coordinates
     height, width = rgb_image.shape[:2]
     mask = torch.zeros((1, height, width), dtype=torch.float32)
@@ -675,7 +675,10 @@ class SituationalAwarenessDataset(Dataset):
 
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
-        padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
+        if self.args.seg_mode == 'multiclass':
+            padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
+        else:
+            padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(3, 2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
         
         return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
 

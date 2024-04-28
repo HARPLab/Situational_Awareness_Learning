@@ -71,7 +71,7 @@ class DiceLoss(_Loss):
         self.ignore_index = ignore_index
         self.__name__ = "DiceLoss"
 
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, ignore_mask=None) -> torch.Tensor:
 
         assert y_true.size(0) == y_pred.size(0)
         if self.class_weights is None:
@@ -102,6 +102,8 @@ class DiceLoss(_Loss):
             # extreme values 0 and 1
             if self.mode == MULTICLASS_MODE:
                 y_pred = y_pred.log_softmax(dim=1).exp()
+                y_pred = y_pred*ignore_mask
+
             else:
                 y_pred = F.logsigmoid(y_pred).exp()
 
@@ -131,6 +133,7 @@ class DiceLoss(_Loss):
             else:
                 y_true = F.one_hot(y_true, num_classes)  # N,H*W -> N,H*W, C
                 y_true = y_true.permute(0, 2, 1)  # N, C, H*W
+                y_true = y_true*ignore_mask.view(bs, ignore_mask.shape[1], -1)                
             assert len(self.class_weights) == y_true.size(1)            
 
         if self.mode == MULTILABEL_MODE:

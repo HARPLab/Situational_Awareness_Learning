@@ -14,7 +14,7 @@ from segmentation_models_pytorch import utils as smp_utils
 import argparse 
 import wandb
 sys.path.insert(0, './models/')
-from custom_train import ValidEpoch, TrainEpoch
+from custom_train import ValidEpoch, TrainEpoch, VizEpoch
 from dice_loss import DiceLoss   
 
    
@@ -143,12 +143,30 @@ def main(args):
         verbose=True,
     )
 
+    train_visualization_epoch = VizEpoch(
+        model,
+        loss = loss,
+        metrics=metrics,
+        device=DEVICE,
+        verbose=True,
+        args=args
+    )
+
     valid_epoch = ValidEpoch(
         model, 
         loss=loss, 
         metrics=metrics, 
         device=DEVICE,
         verbose=True,
+    )
+
+    valid_visualization_epoch = VizEpoch(
+        model,
+        loss = loss,
+        metrics=metrics,
+        device=DEVICE,
+        verbose=True,        
+        args=args
     )
 
     # train model for 40 epochs
@@ -165,6 +183,17 @@ def main(args):
                 wandb.log({"train_"+k: train_logs[k]})
             for k in valid_logs:
                 wandb.log({"valid_"+k: valid_logs[k]})
+            
+            if not args.dont_log_images:
+                # train_viz_idx = np.random.choice(range(len(train_data)), 1)
+                train_viz_idx = 0
+                train_viz_logs = train_visualization_epoch.run(train_data[train_viz_idx])
+                valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
+
+                for j, fig in enumerate(train_viz_logs):
+                    wandb.log({"train_visualizations_{}".format(i): fig})
+                    wandb.log({"val_visualizations_{}".format(i): fig})
+
 
         # do something (save model, change lr, etc.)
         if max_score < valid_logs['iou_score']:
@@ -177,15 +206,13 @@ def main(args):
                 torch.save(model, 
                     './best_model_%s.pth' 
                     % wandb_run_name)
-            print('Model saved with score %.4f! @ epoch %d' % (max_score, i))
+            print('Model saved with val score %.4f! @ epoch %d' % (max_score, i))
 
             
         if i > 0 and i % args.lr_decay_epochstep == 0:
             optimizer.param_groups[0]['lr'] /= 10
             print('Decimating decoder learning rate to %f' % optimizer.param_groups[0]['lr'])
 
-
-    # ## Test best saved model
     if args.wandb:
         wandb.finish()
 
@@ -207,13 +234,14 @@ if __name__ == "__main__":
     args.add_argument("--sensor-config-file", type=str, default='sensor_config.ini')
     args.add_argument("--raw-data", type=str, default='/media/storage/raw_data_corrected')
     args.add_argument("--use-rgb", action='store_true')
-    args.add_argument("--instseg-channels", type=int, default=2)
+    args.add_argument("--instseg-channels", type=int, default=1)
     args.add_argument("--middle-andsides", action='store_false')
     args.add_argument("--secs-of-history", type=float, default=5.0)
     args.add_argument("--history-sample-rate", type=float, default=4.0)
-    args.add_argument("--gaze-gaussian-sigma", type=float, default=10.0)
+    args.add_argument("--gaze-gaussian-sigma", type=float, default=5.0)
     args.add_argument("--gaze-fade", action='store_true')
     args.add_argument("--lr-decay-epochstep", type=int, default=10)
+    args.add_argument("--lr-decay-factor", type=int, default=10)
     args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
                       default='', help="Empty string -> sample everything")
     args.add_argument("--ignore-oldclicks", action='store_true')
@@ -231,7 +259,10 @@ if __name__ == "__main__":
     args.add_argument("--num-epochs", type=int, default=40)
     args.add_argument("--lr", type=float, default=0.0001)
     args.add_argument("--wandb", action='store_false')
+    args.add_argument("--dont-log-images", action='store_true')
     args.add_argument("--unfix-valset", action='store_true')
+    args.add_argument("--aware-threshold", type=float, default=0.5)
+    args.add_argument("--unaware-threshold", type=float, default=0.5)
     
     args.add_argument("--run-name", type=str, default="")    
     args = args.parse_args()
