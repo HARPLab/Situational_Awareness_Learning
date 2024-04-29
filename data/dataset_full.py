@@ -538,7 +538,7 @@ class SituationalAwarenessDataset(Dataset):
                 ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset, frame_num)
         else:
             ignore_mask = np.ones_like(full_label_mask)
-            if ignore_mask.ndim == 2:
+            if ignore_mask.ndim == 2: #  add a channel dimension even if this is a single channel mask
                 ignore_mask = ignore_mask[..., np.newaxis]
             if not self.middle_andsides:
                 ignore_mask_left = np.ones_like(full_label_mask_left)[..., np.newaxis]
@@ -675,10 +675,7 @@ class SituationalAwarenessDataset(Dataset):
 
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
-        if self.args.seg_mode == 'multiclass':
-            padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
-        else:
-            padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(3, 2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
+        padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
         
         return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
 

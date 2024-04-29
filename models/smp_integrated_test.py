@@ -172,9 +172,9 @@ def main(args):
     # train model for 40 epochs
     max_score = 0
 
-    for i in range(0, args.num_epochs):
+    for cur_epoch in range(0, args.num_epochs):
         
-        print('\nEpoch: {}'.format(i))
+        print('\nEpoch: {}'.format(cur_epoch))
         train_logs = train_epoch.run(train_loader)
         valid_logs = valid_epoch.run(valid_loader)
         
@@ -187,12 +187,15 @@ def main(args):
             if not args.dont_log_images:
                 # train_viz_idx = np.random.choice(range(len(train_data)), 1)
                 train_viz_idx = 0
-                train_viz_logs = train_visualization_epoch.run(train_data[train_viz_idx])
-                valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
+                val_viz_idx = 0
+                for idx in range(len(val_episodes)):
+                    train_viz_logs = train_visualization_epoch.run(train_data[idx])
+                    valid_viz_logs = valid_visualization_epoch.run(valid_data[idx])
 
-                for j, fig in enumerate(train_viz_logs):
-                    wandb.log({"train_visualizations_{}".format(i): fig})
-                    wandb.log({"val_visualizations_{}".format(i): fig})
+                    for j, fig in enumerate(train_viz_logs):
+                        wandb.log({"train_visualizations_{}".format(cur_epoch): fig})
+                    for j, fig in enumerate(valid_viz_logs):
+                        wandb.log({"val_visualizations_{}".format(cur_epoch): fig})
 
 
         # do something (save model, change lr, etc.)
@@ -206,10 +209,10 @@ def main(args):
                 torch.save(model, 
                     './best_model_%s.pth' 
                     % wandb_run_name)
-            print('Model saved with val score %.4f! @ epoch %d' % (max_score, i))
+            print('Model saved with val score %.4f! @ epoch %d' % (max_score, cur_epoch))
 
             
-        if i > 0 and i % args.lr_decay_epochstep == 0:
+        if cur_epoch > 0 and cur_epoch % args.lr_decay_epochstep == 0:
             optimizer.param_groups[0]['lr'] /= 10
             print('Decimating decoder learning rate to %f' % optimizer.param_groups[0]['lr'])
 
@@ -249,6 +252,9 @@ if __name__ == "__main__":
     args.add_argument("--pre-clicks-excl-time", type=float, default=1.0, help="seconds before click to exclude for reaction time")
     args.add_argument("--unaware-classwt", type=float, default=1.0)
     args.add_argument("--bg-classwt", type=float, default=1e-5)
+    args.add_argument("--aware-threshold", type=float, default=0.5)
+    args.add_argument("--unaware-threshold", type=float, default=0.5)
+
 
     # training params
     args.add_argument("--device", type=str, default='cuda')
@@ -260,9 +266,8 @@ if __name__ == "__main__":
     args.add_argument("--lr", type=float, default=0.0001)
     args.add_argument("--wandb", action='store_false')
     args.add_argument("--dont-log-images", action='store_true')
+    args.add_argument("--image-save-freq", type=int, default=150)
     args.add_argument("--unfix-valset", action='store_true')
-    args.add_argument("--aware-threshold", type=float, default=0.5)
-    args.add_argument("--unaware-threshold", type=float, default=0.5)
     
     args.add_argument("--run-name", type=str, default="")    
     args = args.parse_args()

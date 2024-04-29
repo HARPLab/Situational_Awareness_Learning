@@ -102,10 +102,9 @@ class DiceLoss(_Loss):
             # extreme values 0 and 1
             if self.mode == MULTICLASS_MODE:
                 y_pred = y_pred.log_softmax(dim=1).exp()
-                y_pred = y_pred*ignore_mask
-
             else:
                 y_pred = F.logsigmoid(y_pred).exp()
+            y_pred = y_pred*ignore_mask
 
         bs = y_true.size(0)
         num_classes = y_pred.size(1)

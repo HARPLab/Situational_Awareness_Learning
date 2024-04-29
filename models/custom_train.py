@@ -234,12 +234,12 @@ class VizEpoch(Epoch):
                     
                     
                     if self.args.instseg_channels == 1:
-                        im0 = Image.fromarray(np.uint8(image.numpy()[1]*255)) # take G channel instead of r
+                        im0 = Image.fromarray(np.uint8(image.numpy()[0]*255)) 
                         im1 = Image.fromarray(np.uint8(mask.numpy()[0]*255))
                         im2 = Image.fromarray(np.uint8(image.numpy()[1]*255))
                     else:
-                        im0 = Image.fromarray(np.uint8(image.numpy()[0]*255))
-                        im1 = Image.fromarray(np.uint8(image.numpy()[1]*255))
+                        im0 = Image.fromarray(np.uint8(image.numpy()[1]*255)) # take G channel instead of R for input segmentation
+                        im1 = Image.fromarray(np.uint8(mask.numpy()[0]*255)) 
                         im2 = Image.fromarray(np.uint8(image.numpy()[2]*255))
                     
                     pr_mask = self.model.predict(image.to(self.device).unsqueeze(0))
