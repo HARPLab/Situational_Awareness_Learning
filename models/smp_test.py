@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 
 
 
-DATA_DIR = './data/CamVid/'
+DATA_DIR = './data_camvid/CamVid/'
 
 # load repo with data if it is not exists
 if not os.path.exists(DATA_DIR):

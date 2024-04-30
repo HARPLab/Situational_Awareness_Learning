@@ -10,7 +10,9 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
-from io import BytesIO
+# from io import BytesIO
+# from optical_flow.pytorch_liteflownet.run import estimate
+# import flowiz as fz
 import torchvision.transforms.functional as TF
 
 def ptsWorld2Cam(focus_hit_pt, world2camMatrix, K):
@@ -230,6 +232,9 @@ class SituationalAwarenessDataset(Dataset):
         self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
 
         self.clicked_frame_dict = get_clicked_frame_dict(self.corrected_labels_df)
+        with open("%s/offset.txt" % self.images_dir, 'r') as file:
+            self.offset = int(file.read()) 
+
         
         print(self.episode)
 
@@ -616,6 +621,38 @@ class SituationalAwarenessDataset(Dataset):
             gaze_heatmap_right = gaussian_contour_plot(np.array(instance_seg_right_image), 
                                                        raw_gaze_right, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
         
+        # Construct Optical Flow
+        curr_opt_frame_time = current_time
+        prev_opt_frame_time = curr_opt_frame_time - 0.6
+        closest_frame2_indices_ranking = np.argsort(abs(np.array(history_frame_times)-prev_opt_frame_time))
+        closest_frame2_ranking = [history_frames[i] for i in closest_frame2_indices_ranking]
+        closest_frame2 = 0
+        for f in range(len(closest_frame2_ranking)):
+            f_num = closest_frame2_ranking[f] + self.rgb_frame_delay
+            if os.path.exists(self.images_dir / 'rgb_output' / ('%.6d.png' % f_num)):
+                closest_frame2 = closest_frame2_ranking[f]
+                break
+        img1_path = self.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)
+        im2_f_num = closest_frame2 + self.rgb_frame_delay
+        print(im2_f_num)
+        img2_path = self.images_dir / 'rgb_output' / ('%.6d.png' % im2_f_num)
+        tenOne = torch.FloatTensor(np.ascontiguousarray(np.array(Image.open(img1_path).convert('RGB'))[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)))
+        tenTwo = torch.FloatTensor(np.ascontiguousarray(np.array(Image.open(img2_path).convert('RGB'))[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)))
+
+        tenOutput = estimate(tenOne, tenTwo)
+
+        if not os.path.exists(self.images_dir / 'flo'):
+            os.makedirs(self.images_dir / 'flo')
+        objOutput = open(self.images_dir/ 'flo' / ('%.6d_flow.flo' % frame_num), 'wb')
+
+        np.array([ 80, 73, 69, 72 ], np.uint8).tofile(objOutput)
+        np.array([ tenOutput.shape[2], tenOutput.shape[1] ], np.int32).tofile(objOutput)
+        np.array(tenOutput.numpy().transpose(1, 2, 0), np.float32).tofile(objOutput)
+
+        objOutput.close()
+        flo_file = self.images_dir/ 'flo' / ('%.6d_flow.flo' % frame_num)
+        flow_img = fz.convert_from_file(str(flo_file))
+
         # Convert all images to tensors
         if self.use_rgb:
             rgb_image = transforms.functional.to_tensor(rgb_image) # only use this function to convert PIL images to tensors, normalizes between 0 and 1
@@ -676,8 +713,9 @@ class SituationalAwarenessDataset(Dataset):
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
-        
-        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
+
+        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask, 
+    # flow_img
 
     def __len__(self):        
         return len(self.index_mapping)

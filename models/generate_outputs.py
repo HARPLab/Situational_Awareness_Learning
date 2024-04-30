@@ -7,6 +7,7 @@ home_folder = os.path.expanduser('~')
 sys.path.insert(0, os.path.join(home_folder, 'Situational_Awareness_Learning'))
 from data.dataset_full import SituationalAwarenessDataset
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import numpy as np
 import segmentation_models_pytorch as smp
@@ -37,17 +38,13 @@ def viz_inputs_with_gaze_overlaid(img_inputs, rgb, gt, pr, name):
 
     gaze_heatmap = np.array(img_inputs[-1])[4:-4, :]*255
 
-    # Plot the images
-    axes[0, 0].imshow(img_inputs[0])
-    axes[0, 0].set_title('Instance Segmentation (R channel)')
-    axes[0, 0].axis('off')
+    for i in range(len(img_inputs)-1):
+        # Plot the images
+        axes[0, i].imshow(img_inputs[i])
+        axes[0, i].axis('off')
 
-    axes[0, 1].imshow(img_inputs[1])
-    axes[0, 1].set_title('Instance Segmentation (G channel)')
-    axes[0, 1].axis('off')
 
     axes[0, 2].imshow(gaze_heatmap)
-    axes[1, 1].set_title('Gaze heatmap')
     axes[0, 2].axis('off')
 
     # fig1 = plt.figure()
@@ -98,15 +95,16 @@ def visualize_all(images, name):
 # encoder_weights = 'imagenet'
 # add argparse for encoder and encoder_weights
 
-def save_outputs(train_data, episodes, best_model, wandb_run_name, DEVICE, type):
+def save_outputs(train_data, episodes, best_model, wandb_run_name, DEVICE, type, aware_threhold, unaware_threshold):
+    
     for i in range(len(train_data)):
-        if os.path.exists(os.path.join(args.viz_output_path, wandb_run_name, episodes[i])) == False:
-            os.makedirs(os.path.join(args.viz_output_path, wandb_run_name, episodes[i]))
+        if os.path.exists(os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold))) == False:
+            os.makedirs(os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold)))
             
-        if os.path.exists(os.path.join(args.viz_output_path, wandb_run_name, episodes[i], type)) == False:
-            os.makedirs(os.path.join(args.viz_output_path, wandb_run_name, episodes[i], type))
+        if os.path.exists(os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold), type)) == False:
+            os.makedirs(os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold), type))
 
-        for j in range(len(train_data[i])):
+        for j in range(1000, len(train_data[i])):
             if j%10 == 0:
                 print(i, j)
                 image, gt_mask, mask = train_data[i][j]
@@ -116,54 +114,99 @@ def save_outputs(train_data, episodes, best_model, wandb_run_name, DEVICE, type)
                 except:
                     print(train_data[i].images_dir / 'rgb_output' / ('%.6d.png' % frame_num))
                     continue
+                
+                
+                if args.instseg_channels == 1:
+                    im0 = Image.fromarray(np.uint8(image.numpy()[0]*255))
+                    im2 = Image.fromarray(np.uint8(image.numpy()[1]*255))
+                else:
+                    im0 = Image.fromarray(np.uint8(image.numpy()[0]*255))
+                    im1 = Image.fromarray(np.uint8(image.numpy()[1]*255))
+                    im2 = Image.fromarray(np.uint8(image.numpy()[2]*255))
+                
+                pr_mask = best_model.predict(image.to(DEVICE).unsqueeze(0))
+                if 'multiclass' in wandb_run_name:
+                    pr_mask = F.log_softmax(pr_mask, dim=1).exp().squeeze().cpu().numpy()
+                    pr_mask = np.argmax(pr_mask, axis=0)
+                    pr_fin = np.zeros([pr_mask.shape[0], pr_mask.shape[1], 3])                
+                    pr_fin[pr_mask == 0] = np.array([0, 255, 0])
+                    pr_fin[pr_mask == 1] = np.array([255, 0, 0])
+                    gt_mask = gt_mask.squeeze()
+                    gt_fin = np.zeros([gt_mask.shape[0], gt_mask.shape[1], 3])
+                    gt_fin[gt_mask == 0] = np.array([0, 255, 0])
+                    gt_fin[gt_mask == 1] = np.array([255, 0, 0])
+                    gt_fin[gt_mask == 2] = np.array([0, 0, 0])
+                
 
-                im0 = Image.fromarray(np.uint8(image.numpy()[0]*255))
-                im1 = Image.fromarray(np.uint8(image.numpy()[1]*255))
-                im2 = Image.fromarray(np.uint8(image.numpy()[2]*255))
-                # visualize_all([im0, im1, im2], os.path.kjoin(args.viz_output_path, "inputs_train_" + str(n)))
-                # gt_mask = gt_mask.squeeze()
-                # pr_mask = best_model.predict(image.to(DEVICE).unsqueeze(0))
-                # print(pr_mask.shape)
-                # pr_mask = (pr_mask.squeeze().cpu().numpy().round())
+                else:
+                    pr_mask = (F.logsigmoid(pr_mask).exp().squeeze().cpu().numpy().round())
+    
                 # import ipdb; ipdb.set_trace()
-                # pr_fin = np.zeros([pr_mask.shape[1], pr_mask.shape[2], 3])
-                # pr_fin[pr_mask[0] > pr_mask[1]] = np.array([0, 255, 0])
-                # pr_fin[pr_mask[0] <= pr_mask[1]] = np.array([255, 0, 0])
-                # pr_fin[np.sum(pr_mask, axis=0) == 0] = np.array([0, 0, 0])
+                    aware_pixels = pr_mask[0] > aware_threhold 
+                    unaware_pixels = pr_mask[1] > unaware_threshold
+                    
+                    pr_fin = np.zeros([pr_mask.shape[1], pr_mask.shape[2], 3])                
+                    pr_fin[aware_pixels] = np.array([0, 255, 0])
+                    pr_fin[unaware_pixels] = np.array([255, 0, 0])
+                    
+                    
+                
+                # pr_fin2 = np.zeros([pr_mask.shape[1], pr_mask.shape[2], 3])                
+                # pr_fin2[pr_mask[0] > pr_mask[1]] = np.array([0, 255, 0])
+                # pr_fin2[pr_mask[1] >= pr_mask[0]] = np.array([255, 0, 0])
+                # pr_fin2[bg_pixels] = np.array([0, 0, 0])
+                # pr_fin[pr_mask == 0] = np.array([0, 255, 0])
+                # pr_fin[pr_mask == 1] = np.array([255, 0, 0])
+                # pr_fin[pr_mask == 2] = np.array([0, 0, 0])
                 
                 # bg_pixels = np.sum(pr_mask, axis=0) == 0
                 # pr_fin = np.argmax(pr_mask, axis = 0)
                 # pr_fin[bg_pixels] = -1
                 # pr_fin += 1
                 
-                gt_mask = (gt_mask.cpu().numpy().round())
-                gt_fin = np.zeros([gt_mask.shape[1], gt_mask.shape[2], 3])
-                gt_fin[gt_mask[0] > gt_mask[1]] = np.array([0, 255, 0])
-                gt_fin[gt_mask[0] <= gt_mask[1]] = np.array([255, 0, 0])
-                gt_fin[np.sum(gt_mask, axis=0) == 0] = np.array([0, 0, 0])
+                    gt_mask = (gt_mask.cpu().numpy().round())
+                    aware_pixels = gt_mask[0] > aware_threhold 
+                    unaware_pixels = gt_mask[1] > unaware_threshold 
+                    
+                    
+                    gt_fin = np.zeros([gt_mask.shape[1], gt_mask.shape[2], 3])
+
+                    gt_fin[unaware_pixels] = np.array([255, 0, 0])
+                    gt_fin[aware_pixels] = np.array([0, 255, 0])
+                
+                
+
                 
                 # bg_pixels = np.sum(gt_mask, axis=0) == 0
                 # gt_fin = np.argmax(gt_mask, axis = 0)
                 # gt_fin[bg_pixels] = -1
                 # gt_fin += 1
 
-                np.save(os.path.join(args.viz_output_path, wandb_run_name, episodes[i], type,  "gt_" + type + "_" + str(j) + "_" + str(i)) + ".npy", gt_mask)  
+                np.save(os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold), type,  "gt_" + type + "_" + str(j) + "_" + str(i)) + ".npy", gt_mask)  
                 # np.save(os.path.join(args.viz_output_path, wandb_run_name, episodes[i], type, "pr_" + type + "_" + str(j) + "_" + str(i)) + ".npy", pr_mask) 
-                np.save(os.path.join(args.viz_output_path, wandb_run_name, episodes[i], type, "pr_" + type + "_" + str(j) + "_" + str(i)) + ".npy", mask) 
+                np.save(os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold), type, "pr_" + type + "_" + str(j) + "_" + str(i)) + ".npy", mask) 
                 
                 gt_im = Image.fromarray(np.uint8(gt_fin))
                 # gt_im.save(args.viz_output_path + "/gt_train_mask_" + str(j) + "_" + str(i) + ".png")
-                # pr_im = Image.fromarray(np.uint8(pr_fin))
-                print(mask.shape)
+                pr_im = Image.fromarray(np.uint8(pr_fin))
                 # pr_im = Image.fromarray(np.uint8(mask))
                 # pr_im.save(args.viz_output_path + "/pr_train_mask_" + str(j) + "_" + str(i) + ".png")
                 
-                viz_inputs_with_gaze_overlaid([im0, im1, im2], rgb_image, gt_im, mask[0], os.path.join(args.viz_output_path, wandb_run_name, episodes[i], type, type + "_" + str(j) + "_" + str(i)))
+                if args.instseg_channels == 1:
+                    viz_inputs_with_gaze_overlaid([im0, im2], rgb_image, gt_im, pr_im, os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold), type, type + "_" + str(j) + "_" + str(i)))
+                else:
+                    viz_inputs_with_gaze_overlaid([im0, im1, im2], rgb_image, gt_im, pr_im, os.path.join(args.viz_output_path, wandb_run_name, episodes[i] + '_' + str(aware_threhold) + '_' + str(unaware_threshold), type, type + "_" + str(j) + "_" + str(i)))
+
 
 
 def main(args):
     ENCODER = args.encoder
-    CLASSES = ['aware', 'not_aware']
+    if args.seg_mode == 'multilabel':
+        CLASSES = ['aware', 'not_aware']
+        class_weights = [1, args.unaware_classwt]
+    elif args.seg_mode == 'multiclass':
+        CLASSES = ['aware', 'not_aware', 'bg']
+        class_weights = [1, args.unaware_classwt, args.bg_classwt]
     ACTIVATION = args.activation # could be None for logits or 'softmax2d' for multiclass segmentation
     DEVICE = args.device
 
@@ -197,19 +240,20 @@ def main(args):
     # train_episodes = ["cbdr10-36", "cbdr10-53"]
     # train_episodes = ["cbdr10-36"]
     print("Train routes:", train_episodes)
-    val_episodes = episode_list[-num_val_episodes:]
+    # val_episodes = episode_list[-num_val_episodes:]
     # val_episodes = ["brady-71", "abd-32", "brady-32", "abd-21"]
     # val_episodes = ["cbdr10-36", "cbdr10-53"]
-    # val_episodes = ["cbdr10-36"]
+    # val_episodes = ["cbdr9-23"]
+    val_episodes = ["brady-71"]
     print("Val routes:", val_episodes)
 
-    wandb_run_name = "%s_m%s_rgb%s_seg%d_sh%.1f@%.1f_g%.1f_gf%s_sample_%s" % (ENCODER, args.middle_andsides, args.use_rgb,
-            args.instseg_channels, args.secs_of_history, 
-            args.history_sample_rate, args.gaze_gaussian_sigma, args.gaze_fade, args.sample_clicks) + args.run_name
+    wandb_run_name = "%s_m%s_rgb%s_seg%d_mode_%s_sh%.1f@%.1f_gf%s_sample_%s_wus%s_ioc%s" % (ENCODER, args.middle_andsides,
+                            args.use_rgb, args.instseg_channels, args.seg_mode,
+                            args.secs_of_history, args.history_sample_rate,
+                            args.gaze_fade, args.sample_clicks, args.weighted_unaware_sampling, args.ignore_oldclicks) + args.run_name
 
     # import ipdb; ipdb.set_trace()
-    # best_model = torch.load("./pretrained_models/best_model_" + wandb_run_name + '.pth')
-    best_model = None
+    best_model = torch.load("./pretrained_models/best_model_" + wandb_run_name + '.pth')
 
     if args.wandb:
         wandb.init(
@@ -224,18 +268,14 @@ def main(args):
             name=wandb_run_name
         )
 
-    # train_data = []
-    # for ep in train_episodes:
-    #     dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
-    #     train_data.append(dataset)
-    # # dataloader shuffle might just be shuffling the episode level SituationalAwarenessDataset.
-    # train_dataset = torch.utils.data.ConcatDataset(train_data)
-
     valid_data = []
+    concat_val_sample_weights = []
     for ep in val_episodes:
         dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
         valid_data.append(dataset)
+        concat_val_sample_weights += dataset.get_sample_weights()
     valid_dataset = torch.utils.data.ConcatDataset(valid_data)
+    valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
 
     if os.path.exists(args.viz_output_path) == False:
         os.makedirs(args.viz_output_path)
@@ -246,7 +286,7 @@ def main(args):
     # # ## Visualize predictions
 
     # save_outputs(train_data, train_episodes, best_model, wandb_run_name, DEVICE, "train")
-    save_outputs(valid_data, val_episodes, best_model, wandb_run_name, DEVICE, "valid")
+    save_outputs(valid_data, val_episodes, best_model, wandb_run_name, DEVICE, "valid", args.aware_threshold, args.unaware_threshold)
 
 
 
@@ -258,6 +298,8 @@ if __name__ == "__main__":
     args.add_argument("--encoder-weights", type=str, default='imagenet')
     # args.add_argument("--classes", type=str, default='car')
     args.add_argument("--activation", type=str, default='sigmoid')
+    args.add_argument("--seg-mode", choices=['binary', 'multiclass', 'multilabel'], default='multiclass')
+
     
     # data set config params
     args.add_argument("--sensor-config-file", type=str, default='sensor_config.ini')
@@ -272,6 +314,13 @@ if __name__ == "__main__":
     args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
                     default='', help="Empty string -> sample everything")
     args.add_argument("--ignore-oldclicks", action='store_true')
+    args.add_argument("--bg-classwt", type=float, default=1e-5)
+    args.add_argument("--weighted-unaware-sampling", action='store_true')
+    args.add_argument("--unaware-classwt", type=float, default=1.0)
+    args.add_argument("--aware-threshold", type=float, default=0.5)
+    args.add_argument("--unaware-threshold", type=float, default=0.5)
+    args.add_argument("--lr-decay-epochstep", type=int, default=10)
+
     
 
 

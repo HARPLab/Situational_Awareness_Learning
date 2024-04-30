@@ -14,6 +14,15 @@
             ]
         },
         {
+            "name": "smp_test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/models/smp_test.py",
+            "console": "integratedTerminal",
+            "env": {"CUDA_VISIBLE_DEVICES": "0"},
+            "justMyCode": false
+        },
+        {
             "name": "smp_integrated_test",
             "type": "debugpy",
             "request": "launch",
@@ -30,7 +39,7 @@
             "console": "integratedTerminal",
             "args": [   "--wandb",
                         "--num-workers", "0",
-                        "--raw-data", "/home/harpadmin/raw_data_tiny",
+                        "--raw-data", "/media/storage/raw_data_corrected",
                         "--num-val-episodes", "1",
                         "--sample-clicks", "pre_excl",
                         "--batch-size", "24",
@@ -40,7 +49,7 @@
                         "--seg-mode", "multiclass",
                         "--unaware-classwt", "20"
                     ],
-            "env": {"CUDA_VISIBLE_DEVICES": "1"}
+            "env": {"CUDA_VISIBLE_DEVICES": "0"}
         },
         {
             "name": "generate_outputs",

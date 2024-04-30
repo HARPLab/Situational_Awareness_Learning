@@ -6,13 +6,13 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
-from data.dataset_full import SituationalAwarenessDataset
+from data.dataset_full_corrected import SituationalAwarenessDataset
     
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
-import segmentation_models_pytorch as smp
-from segmentation_models_pytorch import utils as smp_utils
+# import segmentation_models_pytorch as smp
+# from segmentation_models_pytorch import utils as smp_utils
 
 # helper function for data visualization
 def visualize(**images):
@@ -66,12 +66,12 @@ args = args.parse_args()
 
 # Lets look at data we have
 
-dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, "cbdr10-23", args)
+dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, "yooni-21", args)
 # import ipdb; ipdb.set_trace()
 
 for i in range(0, len(dataset), 25):
     print(i)
-    final_concat_image, label_mask_image = dataset[i] # get some sample
+    final_concat_image, label_mask_image, flow = dataset[i] # get some sample
     np.save("test_input_output/example_input_" +str(i)+".npy", final_concat_image.numpy())
     np.save("test_input_output/example_output_" +str(i)+".npy", label_mask_image.numpy())
     visualize_all(final_concat_image.numpy(), "test_input_output/input_" + str(i))
