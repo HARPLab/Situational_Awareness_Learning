@@ -31,7 +31,7 @@ while frame > 0 and awareness_df["TimeElapsed"][frame - rgb_frame_delay] > end_t
     history_frame_times.append(awareness_df["TimeElapsed"][frame - rgb_frame_delay])
     frame = frame_num - i - 1
     i+=1
-prev_time = current_time - 0.6
+prev_time = current_time - 0.4
 closest_frame2_indices_ranking = np.argsort(abs(np.array(history_frame_times)-prev_time))
 closest_frame2_ranking = [history_frames[i] for i in closest_frame2_indices_ranking]
     
@@ -44,8 +44,8 @@ for f in range(len(closest_frame2_ranking)):
 img1_path = images_dir / 'rgb_output' / ('%.6d.png' % frame_num)
 im2_f_num = closest_frame2 + rgb_frame_delay
 img2_path = images_dir / 'rgb_output' / ('%.6d.png' % im2_f_num)
-tenOne = torch.FloatTensor(np.ascontiguousarray(np.array(Image.open(img1_path))[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)))
-tenTwo = torch.FloatTensor(np.ascontiguousarray(np.array(Image.open(img2_path))[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)))
+tenOne = torch.FloatTensor(np.ascontiguousarray(np.array(Image.open(img1_path).convert('RGB'))[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)))
+tenTwo = torch.FloatTensor(np.ascontiguousarray(np.array(Image.open(img2_path).convert('RGB'))[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)))
 
 tenOutput = estimate(tenOne, tenTwo)
 
