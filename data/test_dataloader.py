@@ -6,7 +6,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
-from data.dataset_full_corrected import SituationalAwarenessDataset
+from data.dataset_full import SituationalAwarenessDataset
     
 import torch
 from torch.utils.data import DataLoader
