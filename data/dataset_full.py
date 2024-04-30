@@ -10,9 +10,9 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
-# from io import BytesIO
-# from optical_flow.pytorch_liteflownet.run import estimate
-# import flowiz as fz
+from io import BytesIO
+from optical_flow.pytorch_liteflownet.run import estimate
+import flowiz as fz
 import torchvision.transforms.functional as TF
 
 def ptsWorld2Cam(focus_hit_pt, world2camMatrix, K):
@@ -714,8 +714,7 @@ class SituationalAwarenessDataset(Dataset):
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
 
-        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask, 
-    # flow_img
+        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask, flow_img
 
     def __len__(self):        
         return len(self.index_mapping)
