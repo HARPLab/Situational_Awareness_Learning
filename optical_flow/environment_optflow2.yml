@@ -1,0 +1,8 @@
+name: opt_flow2
+channels:
+  - defaults
+  - conda-forge
+  - nvidia
+dependencies:
+  - pip=22.3.1
+  - python=3.8
