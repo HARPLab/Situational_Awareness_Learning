@@ -5,6 +5,7 @@ from PIL import Image
 import torch
 from pathlib import Path
 import pandas as pd
+# Need to clone https://github.com/sniklaus/pytorch-liteflownet into optical_flow directory before running this script!
 from optical_flow.pytorch_liteflownet.run import estimate
 import flowiz as fz
 import matplotlib.pyplot as plt
