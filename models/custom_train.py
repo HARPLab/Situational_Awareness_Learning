@@ -119,10 +119,10 @@ class TrainEpoch(Epoch):
     def batch_update(self, x, y, mask):
         self.optimizer.zero_grad()
         prediction = self.model.forward(x)
-        if self.loss.mode == 'multiclass':
-            loss = self.loss(prediction, y, mask)
-        else:
-            loss = self.loss(prediction*mask, y*mask)
+        # if self.loss.mode == 'multiclass':
+        loss = self.loss(prediction, y, mask)
+        # else:
+        #     loss = self.loss(prediction*mask, y*mask)
         loss.backward()
         self.optimizer.step()
         return loss, prediction
@@ -146,10 +146,10 @@ class ValidEpoch(Epoch):
         with torch.no_grad():
             prediction = self.model.forward(x)
             # multiply with mask to ignore old clicks
-            if self.loss.mode == 'multiclass':
-                loss = self.loss(prediction, y, mask)
-            else:
-                loss = self.loss(prediction*mask, y*mask)
+            # if self.loss.mode == 'multiclass':
+            loss = self.loss(prediction, y, mask)
+            # else:
+            #     loss = self.loss(prediction*mask, y*mask)
         return loss, prediction
     
 

@@ -29,18 +29,36 @@ def main(args):
     ACTIVATION = args.activation # could be None for logits or 'softmax2d' for multiclass segmentation
     DEVICE = args.device
 
-    num_images_per_sample = 1 if args.middle_andsides else 3
+    num_images_per_sample = 1 if not args.middle_andsides else 3
     in_channels = num_images_per_sample*(3*(args.use_rgb) + args.instseg_channels + 1)
     train_batch_size = args.batch_size
 
     # create segmentation model with pretrained encoder
-    model = smp.FPN(
-        encoder_name=args.encoder, 
-        encoder_weights=args.encoder_weights, 
-        classes=len(CLASSES), 
-        activation=ACTIVATION,
-        in_channels=in_channels,
-    )
+    if args.architecture == 'fpn':
+        model = smp.FPN(
+            encoder_name=args.encoder, 
+            encoder_weights=args.encoder_weights, 
+            classes=len(CLASSES), 
+            activation=ACTIVATION,
+            in_channels=in_channels,
+        )
+    elif args.architecture == 'unet':
+        model = smp.Unet(
+            encoder_name=args.encoder, 
+            encoder_weights=args.encoder_weights, 
+            classes=len(CLASSES), 
+            activation=ACTIVATION,
+            in_channels=in_channels,
+        )
+    elif args.architecture == 'deeplabv3':
+        model = smp.DeepLabV3(
+            encoder_name=args.encoder, 
+            encoder_weights=args.encoder_weights, 
+            classes=len(CLASSES), 
+            activation=ACTIVATION,
+            in_channels=in_channels,
+        )
+    
 
     episode_list = sorted(os.listdir(args.raw_data), reverse=False)
     num_val_episodes = args.num_val_episodes
@@ -169,9 +187,14 @@ def main(args):
         args=args
     )
 
-    # train model for 40 epochs
+    
     max_score = 0
 
+    # initial visualization to make sure inputs are correct
+    train_viz_logs = train_visualization_epoch.run(train_data[0])
+    valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
+
+    # train model
     for cur_epoch in range(0, args.num_epochs):
         
         print('\nEpoch: {}'.format(cur_epoch))
@@ -226,7 +249,8 @@ if __name__ == "__main__":
 
     args = argparse.ArgumentParser()
     # model params
-    args.add_argument("--encoder", type=str, default='mobilenet_v2')    
+    args.add_argument("--architecture", choices=['fpn', 'unet', 'deeplabv3'], default='fpn')
+    args.add_argument("--encoder", choices=['resnet18', 'resnet34', 'resnet50', 'mobilenet_v2', 'efficientnet-b0'], default='mobilenet_v2')
     args.add_argument("--encoder-weights", choices=['imagenet', 'swsl', 'ssl', 'instagram', None], default=None)
     # args.add_argument("--classes", type=str, default='car')
     # new dice loss does activation in the loss function
@@ -238,11 +262,12 @@ if __name__ == "__main__":
     args.add_argument("--raw-data", type=str, default='/media/storage/raw_data_corrected')
     args.add_argument("--use-rgb", action='store_true')
     args.add_argument("--instseg-channels", type=int, default=1)
-    args.add_argument("--middle-andsides", action='store_false')
+    args.add_argument("--middle-andsides", action='store_true')
     args.add_argument("--secs-of-history", type=float, default=5.0)
     args.add_argument("--history-sample-rate", type=float, default=4.0)
     args.add_argument("--gaze-gaussian-sigma", type=float, default=5.0)
     args.add_argument("--gaze-fade", action='store_true')
+    args.add_argument("--gaze-format", choices=['dot', 'blob'], default='blob')
     args.add_argument("--lr-decay-epochstep", type=int, default=10)
     args.add_argument("--lr-decay-factor", type=int, default=10)
     args.add_argument("--sample-clicks", choices=['post_click', 'pre_excl', 'both', ''], 
