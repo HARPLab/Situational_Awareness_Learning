@@ -58,7 +58,6 @@ def main(args):
         # hard code val routes to keep things comparable
         val_episodes = ["cbdr8-54" , "cbdr9-23", "cbdr6-41", "abd-21"]
         train_episodes = list(set(episode_list) - set(val_episodes))
-
     wandb_run_name = "%s_m%s_rgb%s_seg%d_mode_%s_sh%.1f@%.1f_gf%s_sample_%s_wus%s_ioc%s" % (ENCODER, args.middle_andsides,
                             args.use_rgb, args.instseg_channels, args.seg_mode,
                             args.secs_of_history, args.history_sample_rate,
@@ -157,7 +156,7 @@ def main(args):
         loss=loss, 
         metrics=metrics, 
         device=DEVICE,
-        verbose=True,
+        verbose=True
     )
 
     valid_visualization_epoch = VizEpoch(
@@ -175,41 +174,41 @@ def main(args):
     for cur_epoch in range(0, args.num_epochs):
         
         print('\nEpoch: {}'.format(cur_epoch))
-        train_logs = train_epoch.run(train_loader)
-        valid_logs = valid_epoch.run(valid_loader)
+        # train_logs = train_epoch.run(train_loader)
+        # valid_logs = valid_epoch.run(valid_loader)
         
         if args.wandb:
-            for k in train_logs:
-                wandb.log({"train_"+k: train_logs[k]})
-            for k in valid_logs:
-                wandb.log({"valid_"+k: valid_logs[k]})
+            # for k in train_logs:
+            #     wandb.log({"train_"+k: train_logs[k]})
+            # for k in valid_logs:
+            #     wandb.log({"valid_"+k: valid_logs[k]})
             
             if not args.dont_log_images:
                 # train_viz_idx = np.random.choice(range(len(train_data)), 1)
                 train_viz_idx = 0
                 val_viz_idx = 0
                 for idx in range(len(val_episodes)):
-                    train_viz_logs = train_visualization_epoch.run(train_data[idx])
+                    # train_viz_logs = train_visualization_epoch.run(train_data[idx])
                     valid_viz_logs = valid_visualization_epoch.run(valid_data[idx])
 
-                    for j, fig in enumerate(train_viz_logs):
-                        wandb.log({"train_visualizations_{}".format(cur_epoch): fig})
+                    # for j, fig in enumerate(train_viz_logs):
+                    #     wandb.log({"train_visualizations_{}".format(cur_epoch): fig})
                     for j, fig in enumerate(valid_viz_logs):
                         wandb.log({"val_visualizations_{}".format(cur_epoch): fig})
 
 
         # do something (save model, change lr, etc.)
-        if max_score < valid_logs['iou_score']:
-            max_score = valid_logs['iou_score']
-            if args.wandb:
-                torch.save(model,
-                    os.path.join(wandb.run.dir, './best_model_%s.pth' 
-                    % wandb_run_name))
-            else:
-                torch.save(model, 
-                    './best_model_%s.pth' 
-                    % wandb_run_name)
-            print('Model saved with val score %.4f! @ epoch %d' % (max_score, cur_epoch))
+        # if max_score < valid_logs['iou_score']:
+        #     max_score = valid_logs['iou_score']
+        #     if args.wandb:
+        #         torch.save(model,
+        #             os.path.join(wandb.run.dir, './best_model_%s.pth' 
+        #             % wandb_run_name))
+        #     else:
+        #         torch.save(model, 
+        #             './best_model_%s.pth' 
+        #             % wandb_run_name)
+        #     print('Model saved with val score %.4f! @ epoch %d' % (max_score, cur_epoch))
 
             
         if cur_epoch > 0 and cur_epoch % args.lr_decay_epochstep == 0:

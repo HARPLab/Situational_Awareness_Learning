@@ -167,12 +167,6 @@ def viz_inputs_with_gaze_overlaid(img_inputs, rgb, gt, pr):
     axes[0, 2].imshow(gaze_heatmap)
     axes[0, 2].axis('off')
 
-    # fig1 = plt.figure()
-    # foo = cv2.merge((gaze_heatmap, np.zeros_like(gaze_heatmap), np.zeros_like(gaze_heatmap)))
-    # ax1 = fig1.add_subplot(1,1,1)
-    # ax1.imshow(gaze_heatmap)
-    # fig1.savefig(name + '_gaze.png')
-
     axes[1, 0].imshow(cv2.addWeighted(np.array(rgb), 1, 
                                       255*cv2.merge((gaze_heatmap, np.zeros_like(gaze_heatmap), np.zeros_like(gaze_heatmap))), 
                                       0.5, 0))    
