@@ -3,7 +3,7 @@ import carla
 from torch.utils.data import Dataset, Sampler, BatchSampler
 from torchvision import transforms
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 import configparser
 import numpy as np
 import pandas as pd
@@ -67,6 +67,41 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     pts_right = (u,v)    
     
     return pts_mid, pts_left, pts_right
+
+def gaze_dot_plot(rgb_image, gaze_points, sigma=10, kernel_size = 61, gaze_fade=False):
+    # Create a grid of coordinates
+    height, width = rgb_image.shape[:2]
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask = Image.fromarray(mask)
+    mask_draw = ImageDraw.Draw(mask)
+    gaze_dot_radius = 5
+
+    gaze_fade_min = 10    
+    N = len(gaze_points)
+    gaze_fade_step = (255 - gaze_fade_min) / N
+    
+    if not gaze_fade:
+        for center_pixel in gaze_points:
+
+            mask_draw.ellipse((center_pixel[0]-gaze_dot_radius, center_pixel[1]-gaze_dot_radius,
+                            center_pixel[0]+gaze_dot_radius, center_pixel[1]+gaze_dot_radius),
+                            fill=255)
+    else:
+        for i, center_pixel in enumerate(gaze_points):
+            if center_pixel[0] < -1 or center_pixel[1] < -1:
+                continue
+            # fade gaze from 255 to gaze_fade_min linearly based on time
+            # most recent gaze is gaze_points[0]
+            fill_value = int(gaze_fade_min + gaze_fade_step*(N-i))
+            mask_draw.ellipse((center_pixel[0]-gaze_dot_radius, center_pixel[1]-gaze_dot_radius,
+                center_pixel[0]+gaze_dot_radius, center_pixel[1]+gaze_dot_radius),
+                fill=fill_value)
+
+    # if gaze_blur:
+    #     dotmap = TF.gaussian_blur(mask, kernel_size, sigma)
+    dotmap = transforms.functional.to_tensor(mask)
+    
+    return dotmap
 
 def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 61, gaze_fade=False):
     # Create a grid of coordinates
@@ -225,12 +260,26 @@ class SituationalAwarenessDataset(Dataset):
         self.sample_rate = args.history_sample_rate
         self.gaussian_sigma = args.gaze_gaussian_sigma
 
+        if self.args.gaze_format == 'blob':
+            self.get_gaze_map_tensor = gaussian_contour_plot
+        elif self.args.gaze_format == 'dot':
+            self.get_gaze_map_tensor = gaze_dot_plot
         
         corrected_labels_df_filename = os.path.join(self.raw_data_dir, self.episode, 'corrected-awlabels.csv')
         self.corrected_labels_df = read_corrected_csv(corrected_labels_df_filename)
 
         self.clicked_frame_dict = get_clicked_frame_dict(self.corrected_labels_df)
         
+        # read visible ids per image view (middle, left, right)
+        # this is in RGB/instseg frame of reference
+        # need to subtract rgb_frame_delay to match awareness_df frame of reference
+        vis_per_view_filename = os.path.join(self.raw_data_dir, self.episode, 'visible_is_per_view.npy')        
+        vis_per_view = np.load(vis_per_view_filename, allow_pickle=True)[0]
+        vis_per_view_df = pd.DataFrame.from_dict(vis_per_view)
+        vis_per_view_df['frame_no'] = vis_per_view_df['frame_no'].astype(int) - self.rgb_frame_delay # convert to awareness_df frame of reference
+        vis_per_view_df = vis_per_view_df.set_index('frame_no') 
+        self.vis_per_view_df = vis_per_view_df
+
         print(self.episode)
 
         if self.args.sample_clicks:
@@ -279,6 +328,18 @@ class SituationalAwarenessDataset(Dataset):
             if num_objs_vis == 0:
                 skip_ctr += 1
                 continue
+
+            # check if middle image has objects otherwise skip
+            if not self.middle_andsides:
+                vis_per_view_df_row = self.vis_per_view_df.loc[frame_num]
+                all_vis_mid = np.concatenate((vis_per_view_df_row['iv_vis_mid'],
+                                            vis_per_view_df_row['ip_vis_mid']))
+                if len(all_vis_mid) == 0:
+                    skip_ctr += 1
+                    continue
+                elif all_vis_mid[0] == 0 and len(all_vis_mid) == 1: # sometimes the first vehicle is 0 but these are bg vehicles
+                    skip_ctr += 1
+                    continue
 
             # if we want to sample only around clicks, 
             if self.args.sample_clicks:                
@@ -503,12 +564,12 @@ class SituationalAwarenessDataset(Dataset):
         # init data paths
         if self.use_rgb:        
             rgb_image = Image.open(self.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 rgb_left_image = Image.open(self.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
                 rgb_right_image = Image.open(self.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
              
         instance_seg_image = Image.open(self.images_dir / 'instance_segmentation_output' / ('%.6d.png' % frame_num)).convert('RGB')
-        if not self.middle_andsides:
+        if self.middle_andsides:
             instance_seg_left_image = Image.open(self.images_dir / 'instance_segmentation_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
             instance_seg_right_image = Image.open(self.images_dir / 'instance_segmentation_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
 
@@ -526,21 +587,21 @@ class SituationalAwarenessDataset(Dataset):
         
         # full_label_mask = self.get_full_label_mask(instance_seg_image, id_list, offset, aw_visible, aw_answer, user_input)        
         full_label_mask = self.get_corrected_label_mask(instance_seg_image, visible_total, awareness_label, offset=offset)
-        if not self.middle_andsides:
+        if self.middle_andsides:
             full_label_mask_left = self.get_corrected_label_mask(instance_seg_left_image, visible_total, awareness_label, offset=offset)
             full_label_mask_right = self.get_corrected_label_mask(instance_seg_right_image, visible_total, awareness_label, offset=offset)
         # label_mask_image = Image.fromarray(full_label_mask)
 
         if self.args.ignore_oldclicks:
             ignore_mask = self.get_ignore_mask(instance_seg_image, visible_total, awareness_label, offset, frame_num)
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 ignore_mask_left = self.get_ignore_mask(instance_seg_left_image, visible_total, awareness_label, offset, frame_num)
                 ignore_mask_right = self.get_ignore_mask(instance_seg_right_image, visible_total, awareness_label, offset, frame_num)
         else:
             ignore_mask = np.ones_like(full_label_mask)
             if ignore_mask.ndim == 2: #  add a channel dimension even if this is a single channel mask
                 ignore_mask = ignore_mask[..., np.newaxis]
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 ignore_mask_left = np.ones_like(full_label_mask_left)[..., np.newaxis]
                 ignore_mask_right = np.ones_like(full_label_mask_right)[..., np.newaxis]
                 if ignore_mask.ndim == 2:
@@ -549,7 +610,7 @@ class SituationalAwarenessDataset(Dataset):
 
         # Construct gaze heatmap
         raw_gaze_mid= []
-        if not self.middle_andsides:
+        if self.middle_andsides:
             raw_gaze_left = []
             raw_gaze_right = []
         
@@ -574,6 +635,14 @@ class SituationalAwarenessDataset(Dataset):
         raw_gaze_mid, raw_gaze_left, raw_gaze_right = np.zeros((total_history_frames+1, 2), dtype=np.int32)-1,  \
                                                         np.zeros((total_history_frames+1, 2), dtype=np.int32)-1, \
                                                         np.zeros((total_history_frames+1, 2), dtype=np.int32)-1
+        
+        # use the vehicle (and hence cameras') current location and rotation 
+        loc = self.awareness_df["EgoVariables_VehicleLoc"][frame_num - self.rgb_frame_delay]
+        loc = np.asarray([loc[0], loc[1], loc[2]])
+        rot = self.awareness_df["EgoVariables_VehicleRot"][frame_num - self.rgb_frame_delay]
+        rot = np.asarray([rot[0], rot[1], rot[2]])
+
+
         while frame - self.rgb_frame_delay > 0 and step != total_history_frames:
 
             target_time = self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] - frame_time*step
@@ -589,10 +658,6 @@ class SituationalAwarenessDataset(Dataset):
             step += 1
 
             focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][closest_frame])
-            loc = self.awareness_df["EgoVariables_VehicleLoc"][closest_frame]
-            loc = np.asarray([loc[0], loc[1], loc[2]])
-            rot = self.awareness_df["EgoVariables_VehicleRot"][closest_frame]
-            rot = np.asarray([rot[0], rot[1], rot[2]])
             
             pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
             
@@ -601,7 +666,7 @@ class SituationalAwarenessDataset(Dataset):
             if pts_mid[0] >= 0 and pts_mid[0] < instance_seg_image.width and \
                 pts_mid[1] >= 0 and pts_mid[1] < instance_seg_image.height:
                 raw_gaze_mid[step,:] = pts_mid
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 if pts_left[0] >= 0 and pts_left[0] < instance_seg_left_image.width and \
                     pts_left[1] >= 0 and pts_left[1] < instance_seg_left_image.height:
                     raw_gaze_left[step,:] = pts_left
@@ -609,17 +674,17 @@ class SituationalAwarenessDataset(Dataset):
                     pts_right[1] >= 0 and pts_right[1] < instance_seg_right_image.height:
                     raw_gaze_right[step,:] = pts_right
 
-        gaze_heatmap = gaussian_contour_plot(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
-        if not self.middle_andsides:
-            gaze_heatmap_left = gaussian_contour_plot(np.array(instance_seg_left_image), 
+        gaze_heatmap = self.get_gaze_map_tensor(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
+        if self.middle_andsides:
+            gaze_heatmap_left = gaze_dot_plot(np.array(instance_seg_left_image), 
                                                       raw_gaze_left, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
-            gaze_heatmap_right = gaussian_contour_plot(np.array(instance_seg_right_image), 
+            gaze_heatmap_right = gaze_dot_plot(np.array(instance_seg_right_image), 
                                                        raw_gaze_right, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
         
         # Convert all images to tensors
         if self.use_rgb:
             rgb_image = transforms.functional.to_tensor(rgb_image) # only use this function to convert PIL images to tensors, normalizes between 0 and 1
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
                 rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
         
@@ -627,48 +692,48 @@ class SituationalAwarenessDataset(Dataset):
         if self.instseg_channels == 1:
             instance_seg_image = extract_relevant_objects(instance_seg_image, self.args)
             instance_seg_image = transforms.functional.to_tensor(instance_seg_image)
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 instance_seg_left_image = extract_relevant_objects(instance_seg_left_image, self.args)
                 instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)
                 instance_seg_right_image = extract_relevant_objects(instance_seg_right_image, self.args)
                 instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)
         if self.instseg_channels > 1:
             instance_seg_image = transforms.functional.to_tensor(instance_seg_image)[:self.instseg_channels, :, :]
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 instance_seg_left_image = transforms.functional.to_tensor(instance_seg_left_image)[:self.instseg_channels, :, :]
                 instance_seg_right_image = transforms.functional.to_tensor(instance_seg_right_image)[:self.instseg_channels, :, :]
         
         label_mask_image = transforms.functional.to_tensor(full_label_mask)
-        if not self.middle_andsides:
+        if self.middle_andsides:
             label_mask_image_left = transforms.functional.to_tensor(full_label_mask_left)
             label_mask_image_right = transforms.functional.to_tensor(full_label_mask_right)
 
         ignore_mask = torch.from_numpy(ignore_mask)
-        if not self.middle_andsides:
+        if self.middle_andsides:
             ignore_mask_left = torch.from_numpy(ignore_mask_left)
             ignore_mask_right = torch.from_numpy(ignore_mask_right)
 
         if self.use_rgb:
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap, 
                                 rgb_left_image, instance_seg_left_image, gaze_heatmap_left, 
                                 rgb_right_image, instance_seg_right_image, gaze_heatmap_right)
             else:
                 input_images = (rgb_image, instance_seg_image, gaze_heatmap)
         else:
-            if not self.middle_andsides:
+            if self.middle_andsides:
                 input_images = (instance_seg_image, gaze_heatmap, 
                                 instance_seg_left_image, gaze_heatmap_left, 
                                 instance_seg_right_image, gaze_heatmap_right)
             else:
                 input_images = (instance_seg_image, gaze_heatmap)
         final_input_image = torch.cat(input_images)
-        if not self.middle_andsides:
+        if self.middle_andsides:
             final_label_mask_image = torch.cat((label_mask_image, label_mask_image_left, label_mask_image_right))
         else:
             final_label_mask_image = label_mask_image
         
-        if not self.middle_andsides:
+        if self.middle_andsides:
             final_ignore_mask = torch.cat((ignore_mask, ignore_mask_left, ignore_mask_right))
         else:
             final_ignore_mask = ignore_mask
