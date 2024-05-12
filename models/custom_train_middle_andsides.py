@@ -254,7 +254,7 @@ class VizEpoch(Epoch):
                         continue
                     
                     try:
-                        rgb_image_right = Image.open(dataset.images_dir / 'rgb_output_left' / ('%.6d.png' % frame_num)).convert('RGB')
+                        rgb_image_right = Image.open(dataset.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num)).convert('RGB')
                     except:
                         print(dataset.images_dir / 'rgb_output_right' / ('%.6d.png' % frame_num))
                         continue
