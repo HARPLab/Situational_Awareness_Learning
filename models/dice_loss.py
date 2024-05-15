@@ -26,6 +26,7 @@ class DiceLoss(_Loss):
             ignore_index: Optional[int] = None,
             eps: float = 1e-7,
             class_weights: Optional[List[int]] = None,
+            DEVICE = 'cuda'
     ):
         """Implementation of Dice loss for image segmentation task.
         It supports binary, multiclass and multilabel cases
@@ -70,6 +71,7 @@ class DiceLoss(_Loss):
         self.log_loss = log_loss
         self.ignore_index = ignore_index
         self.__name__ = "DiceLoss"
+        self.device = DEVICE
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, ignore_mask=None) -> torch.Tensor:
 
@@ -87,9 +89,9 @@ class DiceLoss(_Loss):
             # TODO: Add check if GPU or CPU
             if torch.cuda.is_available():
                 if isinstance(self.class_weights, torch.Tensor):
-                    self.class_weights_tensor = self.class_weights.clone().detach().cuda()
+                    self.class_weights_tensor = self.class_weights.clone().detach().to(self.device)
                 else:
-                    self.class_weights_tensor = torch.tensor(self.class_weights).cuda()
+                    self.class_weights_tensor = torch.tensor(self.class_weights).to(self.device)
             else:
                 if isinstance(self.class_weights, torch.Tensor):
                     self.class_weights_tensor = self.class_weights.clone().detach().cpu()

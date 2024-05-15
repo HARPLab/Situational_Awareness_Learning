@@ -9,11 +9,11 @@ import numpy as np
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
-from scipy.stats import multivariate_normal
-from io import BytesIO
 import torchvision.transforms.functional as TF
+from data.gaze_utils import add_gaze_event2df
 
-def ptsWorld2Cam(focus_hit_pt, world2camMatrix, K):
+
+def pts_world2cam(focus_hit_pt, world2camMatrix, K):
     tick_focus_hitpt_homog = np.hstack((focus_hit_pt,1))    
     sensor_points = np.dot(world2camMatrix, tick_focus_hitpt_homog)
     
@@ -45,7 +45,7 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     cam_transform = carla.Transform(location=camera_loc_offset, rotation=camera_rot_offset)
     world2cam = np.matmul(cam_transform.get_inverse_matrix(), vehicle_transform.get_inverse_matrix())    
     
-    u,v = ptsWorld2Cam(focus_hit_pt, world2cam, K)
+    u,v = pts_world2cam(focus_hit_pt, world2cam, K)
     pts_mid = (u,v)
         
     # left image  
@@ -54,7 +54,7 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     cam_transform = carla.Transform(location=camera_loc_offset, rotation=camera_rot_offset)    
     world2cam = np.matmul(cam_transform.get_inverse_matrix(), vehicle_transform.get_inverse_matrix())
         
-    u,v = ptsWorld2Cam(focus_hit_pt, world2cam, K)
+    u,v = pts_world2cam(focus_hit_pt, world2cam, K)
     pts_left = (u,v)
     
     # right image  
@@ -63,7 +63,7 @@ def world2pixels(focus_hit_pt, vehicle_transform, K, sensor_config):
     cam_transform = carla.Transform(location=camera_loc_offset, rotation=camera_rot_offset)    
     world2cam = np.matmul(cam_transform.get_inverse_matrix(), vehicle_transform.get_inverse_matrix())
         
-    u,v = ptsWorld2Cam(focus_hit_pt, world2cam, K)
+    u,v = pts_world2cam(focus_hit_pt, world2cam, K)
     pts_right = (u,v)    
     
     return pts_mid, pts_left, pts_right
@@ -78,7 +78,8 @@ def gaze_dot_plot(rgb_image, gaze_points, sigma=10, kernel_size = 61, gaze_fade=
 
     gaze_fade_min = 10    
     N = len(gaze_points)
-    gaze_fade_step = (255 - gaze_fade_min) / N
+    if N != 0:
+        gaze_fade_step = (255 - gaze_fade_min) / N
     
     if not gaze_fade:
         for center_pixel in gaze_points:
@@ -133,14 +134,6 @@ def gaussian_contour_plot(rgb_image, gaze_points, sigma=10, kernel_size = 61, ga
     # heatmap_image.save('heatmap.png')
     
     return heatmap
-
-def frame_filter(frame_num, awareness_df):
-     ego_vel = awareness_df["EgoVariables_VehicleVel"][frame_num]
-     visible_list = awareness_df["AwarenessData_Visible"][frame_num]
-     if ego_vel == 0 and visible_list == []:
-          return 0
-     else:
-          return 1
 
 def read_corrected_csv(path):
     corrected_labels_df = pd.read_csv(path)
@@ -200,8 +193,13 @@ def extract_relevant_objects(instance_seg_image, args):
     width, height = instance_seg_image.size
     mask = np.zeros((height, width, 1), dtype=np.uint8)
     instance_seg_image_r = np.array(instance_seg_image)[:, :, 0]
+    instance_seg_image_g = np.array(instance_seg_image)[:, :, 1]
+    instance_seg_image_b = np.array(instance_seg_image)[:, :, 2]
     for obj_val in relevant_object_values:
         mask[instance_seg_image_r == obj_val] = 255
+    # also, if there are vehicles with id = 0, exclude those (these are background prop vehicles such as in parking lots etc)
+    mask[(instance_seg_image_g == 0) & (instance_seg_image_b == 0)] = 0
+
     return mask
 
 class SABalancedSampler(BatchSampler):
@@ -252,6 +250,9 @@ class SituationalAwarenessDataset(Dataset):
         aw_df_file_name = os.path.join(self.raw_data_dir, self.episode, 'rec_parse-awdata.json')
         
         self.awareness_df = pd.read_json(aw_df_file_name, orient='index')
+        #  perform gaze event classification
+        self.awareness_df = add_gaze_event2df(self.awareness_df)
+
         self.args = args
 
         self.sensor_config = configparser.ConfigParser()
@@ -259,6 +260,11 @@ class SituationalAwarenessDataset(Dataset):
         self.secs_of_history = args.secs_of_history 
         self.sample_rate = args.history_sample_rate
         self.gaussian_sigma = args.gaze_gaussian_sigma
+        if self.args.synthetic_gaze:
+            self.synthetic_gaze_points_dict = np.load(os.path.join(self.raw_data_dir, self.episode, 'synthetic_gaze_points.npy'), allow_pickle=True)[0]
+            for key in self.synthetic_gaze_points_dict.keys():
+                for gaze_type in self.synthetic_gaze_points_dict[key].keys():
+                    np.random.shuffle(self.synthetic_gaze_points_dict[key][gaze_type])
 
         if self.args.gaze_format == 'blob':
             self.get_gaze_map_tensor = gaussian_contour_plot
@@ -553,6 +559,14 @@ class SituationalAwarenessDataset(Dataset):
 
         return world2pixels(focus_hit_pt_scaled, vehicle_transform, K, self.sensor_config)
 
+    def get_synthetic_gaze_heatmap(self, inst_img, frame_num, type):
+        if frame_num in self.synthetic_gaze_points_dict:
+            gaze_points = self.synthetic_gaze_points_dict[frame_num][type]
+        else:
+            gaze_points = []
+        gaze_heatmap = gaze_dot_plot(np.array(inst_img), gaze_points, sigma=10, kernel_size = 61, gaze_fade=self.args.gaze_fade)
+        return gaze_heatmap
+
 
     def __getitem__(self, idx):
         # Return rgb_img, instance_segmentation_img, gaze_heatmap 
@@ -609,77 +623,83 @@ class SituationalAwarenessDataset(Dataset):
                     ignore_mask_right = ignore_mask_right[..., np.newaxis]
 
         # Construct gaze heatmap
-        raw_gaze_mid= []
-        if self.middle_andsides:
-            raw_gaze_left = []
-            raw_gaze_right = []
-        
-        current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
-        end_time = current_time - self.secs_of_history
-        history_frames = []
-        history_frame_times = []
-        i = 0
-        frame = frame_num - i - 1
-        while frame > 0 and self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] > end_time:
-            history_frames.append(frame)
-            history_frame_times.append(self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay])
-            frame = frame_num - i - 1
-            i+=1
-        
-        assert self.secs_of_history*self.sample_rate == int(self.secs_of_history*self.sample_rate), "sample_rate x secs_of_history must be an integer"
-        total_history_frames = int(self.secs_of_history*self.sample_rate)
-        frame_time = 1/self.sample_rate
-        step = 0
-
-        frame = frame_num - 1
-        raw_gaze_mid, raw_gaze_left, raw_gaze_right = np.zeros((total_history_frames+1, 2), dtype=np.int32)-1,  \
-                                                        np.zeros((total_history_frames+1, 2), dtype=np.int32)-1, \
-                                                        np.zeros((total_history_frames+1, 2), dtype=np.int32)-1
-        
-        # use the vehicle (and hence cameras') current location and rotation 
-        loc = self.awareness_df["EgoVariables_VehicleLoc"][frame_num - self.rgb_frame_delay]
-        loc = np.asarray([loc[0], loc[1], loc[2]])
-        rot = self.awareness_df["EgoVariables_VehicleRot"][frame_num - self.rgb_frame_delay]
-        rot = np.asarray([rot[0], rot[1], rot[2]])
-
-
-        while frame - self.rgb_frame_delay > 0 and step != total_history_frames:
-
-            target_time = self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] - frame_time*step
-            closest_frame_indices_ranking = np.argsort(abs(np.array(history_frame_times)-target_time))
-            closest_frame_ranking = [history_frames[i] for i in closest_frame_indices_ranking]
-            
-            closest_frame = 0
-            for f in range(len(closest_frame_ranking)):
-                if os.path.exists(self.images_dir / 'instance_segmentation_output' / \
-                                  ('%.6d.png' % (closest_frame_ranking[f] + self.rgb_frame_delay))):
-                    closest_frame = closest_frame_ranking[f]
-                    break
-            step += 1
-
-            focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][closest_frame])
-            
-            pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
-            
-
-            # don't append gaze if its outside the image            
-            if pts_mid[0] >= 0 and pts_mid[0] < instance_seg_image.width and \
-                pts_mid[1] >= 0 and pts_mid[1] < instance_seg_image.height:
-                raw_gaze_mid[step,:] = pts_mid
+        if self.args.synthetic_gaze:
+            gaze_heatmap = self.get_synthetic_gaze_heatmap(instance_seg_image, frame_num, 'mid')
             if self.middle_andsides:
-                if pts_left[0] >= 0 and pts_left[0] < instance_seg_left_image.width and \
-                    pts_left[1] >= 0 and pts_left[1] < instance_seg_left_image.height:
-                    raw_gaze_left[step,:] = pts_left
-                if pts_right[0] >= 0 and pts_right[0] < instance_seg_right_image.width and \
-                    pts_right[1] >= 0 and pts_right[1] < instance_seg_right_image.height:
-                    raw_gaze_right[step,:] = pts_right
+                gaze_heatmap_left = self.get_synthetic_gaze_heatmap(instance_seg_left_image, frame_num, 'left')
+                gaze_heatmap_right = self.get_synthetic_gaze_heatmap(instance_seg_right_image, frame_num, 'right')
+        else:
+            raw_gaze_mid= []
+            if self.middle_andsides:
+                raw_gaze_left = []
+                raw_gaze_right = []
+            
+            current_time = self.awareness_df["TimeElapsed"][frame_num - self.rgb_frame_delay]
+            end_time = current_time - self.secs_of_history
+            history_frames = []
+            history_frame_times = []
+            i = 0
+            frame = frame_num - i - 1
+            while frame > 0 and self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] > end_time:
+                history_frames.append(frame)
+                history_frame_times.append(self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay])
+                frame = frame_num - i - 1
+                i+=1
+            
+            assert self.secs_of_history*self.sample_rate == int(self.secs_of_history*self.sample_rate), "sample_rate x secs_of_history must be an integer"
+            total_history_frames = int(self.secs_of_history*self.sample_rate)
+            frame_time = 1/self.sample_rate
+            step = 0
 
-        gaze_heatmap = self.get_gaze_map_tensor(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
-        if self.middle_andsides:
-            gaze_heatmap_left = gaze_dot_plot(np.array(instance_seg_left_image), 
-                                                      raw_gaze_left, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
-            gaze_heatmap_right = gaze_dot_plot(np.array(instance_seg_right_image), 
-                                                       raw_gaze_right, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
+            frame = frame_num - 1
+            raw_gaze_mid, raw_gaze_left, raw_gaze_right = np.zeros((total_history_frames+1, 2), dtype=np.int32)-1,  \
+                                                            np.zeros((total_history_frames+1, 2), dtype=np.int32)-1, \
+                                                            np.zeros((total_history_frames+1, 2), dtype=np.int32)-1
+            
+            # use the vehicle (and hence cameras') current location and rotation to calculate gaze pixels
+            loc = self.awareness_df["EgoVariables_VehicleLoc"][frame_num - self.rgb_frame_delay]
+            loc = np.asarray([loc[0], loc[1], loc[2]])
+            rot = self.awareness_df["EgoVariables_VehicleRot"][frame_num - self.rgb_frame_delay]
+            rot = np.asarray([rot[0], rot[1], rot[2]])
+
+            while frame - self.rgb_frame_delay > 0 and step != total_history_frames:
+
+                target_time = self.awareness_df["TimeElapsed"][frame - self.rgb_frame_delay] - frame_time*step
+                closest_frame_indices_ranking = np.argsort(abs(np.array(history_frame_times)-target_time))
+                closest_frame_ranking = [history_frames[i] for i in closest_frame_indices_ranking]
+                
+                closest_frame = 0
+                for f in range(len(closest_frame_ranking)):
+                    if os.path.exists(self.images_dir / 'instance_segmentation_output' / \
+                                    ('%.6d.png' % (closest_frame_ranking[f] + self.rgb_frame_delay))):
+                        closest_frame = closest_frame_ranking[f]
+                        break
+                step += 1
+
+                focus_hit_pt_i = np.asarray(self.awareness_df["FocusInfo_HitPoint"][closest_frame])
+                gaze_event_i = self.awareness_df["gaze_event_label"][closest_frame] # 0-> fix, 1-> sacc, -1 ->noise
+                
+                pts_mid, pts_left, pts_right = self.get_gaze_point(focus_hit_pt_i, loc, rot)
+                
+
+                # don't append gaze if its outside the image or if it isn't a fixation
+                if pts_mid[0] >= 0 and pts_mid[0] < instance_seg_image.width and \
+                    pts_mid[1] >= 0 and pts_mid[1] < instance_seg_image.height and gaze_event_i == 0: 
+                    raw_gaze_mid[step,:] = pts_mid
+                if self.middle_andsides:
+                    if pts_left[0] >= 0 and pts_left[0] < instance_seg_left_image.width and \
+                        pts_left[1] >= 0 and pts_left[1] < instance_seg_left_image.height and gaze_event_i == 0:
+                        raw_gaze_left[step,:] = pts_left
+                    if pts_right[0] >= 0 and pts_right[0] < instance_seg_right_image.width and \
+                        pts_right[1] >= 0 and pts_right[1] < instance_seg_right_image.height and gaze_event_i == 0:
+                        raw_gaze_right[step,:] = pts_right
+
+            gaze_heatmap = self.get_gaze_map_tensor(np.array(instance_seg_image), raw_gaze_mid, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
+            if self.middle_andsides:
+                gaze_heatmap_left = gaze_dot_plot(np.array(instance_seg_left_image), 
+                                                        raw_gaze_left, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
+                gaze_heatmap_right = gaze_dot_plot(np.array(instance_seg_right_image), 
+                                                        raw_gaze_right, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
         
         # Convert all images to tensors
         if self.use_rgb:
@@ -688,6 +708,12 @@ class SituationalAwarenessDataset(Dataset):
                 rgb_left_image = transforms.functional.to_tensor(rgb_left_image)
                 rgb_right_image = transforms.functional.to_tensor(rgb_right_image)
         
+        inst_img_metric_transform = transforms.Compose([transforms.PILToTensor()])
+        
+        instance_seg_image_metrics = inst_img_metric_transform(instance_seg_image).float()
+        if self.middle_andsides:
+            instance_seg_left_image_metrics = inst_img_metric_transform(instance_seg_left_image).float()
+            instance_seg_right_image_metrics =  inst_img_metric_transform(instance_seg_right_image).float()
         # change instance segmentation images
         if self.instseg_channels == 1:
             instance_seg_image = extract_relevant_objects(instance_seg_image, self.args)
@@ -727,6 +753,13 @@ class SituationalAwarenessDataset(Dataset):
                                 instance_seg_right_image, gaze_heatmap_right)
             else:
                 input_images = (instance_seg_image, gaze_heatmap)
+        
+        if self.middle_andsides:
+            images_for_metrics = (instance_seg_image_metrics, instance_seg_left_image_metrics, instance_seg_right_image_metrics)
+            final_images_for_metrics = torch.cat(images_for_metrics)
+        else:
+            final_images_for_metrics = instance_seg_image_metrics
+
         final_input_image = torch.cat(input_images)
         if self.middle_andsides:
             final_label_mask_image = torch.cat((label_mask_image, label_mask_image_left, label_mask_image_right))
@@ -741,8 +774,8 @@ class SituationalAwarenessDataset(Dataset):
         padded_tensor = torch.nn.functional.pad(final_input_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_label_mask_image_tensor = torch.nn.functional.pad(final_label_mask_image, (0, 0, 4, 4), mode='constant', value=0)
         padded_final_ignore_mask = torch.nn.functional.pad(final_ignore_mask.permute(2, 0, 1), (0, 0, 4, 4), mode='constant', value=0)
-        
-        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask
+        padded_final_images_for_metrics = torch.nn.functional.pad(final_images_for_metrics, (0, 0, 4, 4), mode='constant', value=0)
+        return padded_tensor, padded_label_mask_image_tensor, padded_final_ignore_mask, padded_final_images_for_metrics
 
     def __len__(self):        
         return len(self.index_mapping)

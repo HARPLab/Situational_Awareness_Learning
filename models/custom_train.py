@@ -45,7 +45,9 @@ class Epoch:
         logs = {}
         loss_meter = smp_utils.meter.AverageValueMeter()
         metrics_meters = {metric.__name__: smp_utils.meter.AverageValueMeter() for metric in self.metrics}
-
+        pred = []
+        gt = []
+        raw_pred = []
         with tqdm(
             dataloader,
             desc=self.stage_name,
@@ -53,7 +55,7 @@ class Epoch:
             disable=not (self.verbose),
         ) as iterator:
             i = 0
-            for x, y, mask in iterator:
+            for x, y, mask, inst_seg in iterator:
                 x, y, mask = x.to(self.device), y.to(self.device), mask.to(self.device)
                 # if i % 10 == 0:
                 #     np.save('model_inputs_viz/'+ self.stage_name + '_x_{}.npy'.format(i), x.cpu().detach().numpy())
@@ -79,26 +81,39 @@ class Epoch:
                     y *= mask
                     # exclude background class for metric calculation+
                     # sometimes this means for a pixel, GT/pred can be 0,0 which is fine
-                    y_pred = y_pred[:, :2,...]
-                    y = y[:, :2,...]
+                    
                 else:
                     # need to activate the prediction for metric computation
                     y_pred = F.logsigmoid(y_pred).exp()
                     y_pred = y_pred*mask
                     y = y*mask
 
+                add_preds_once = 0
                 # update metrics logs
                 for metric_fn in self.metrics:
-                    metric_value = metric_fn(y_pred, y).cpu().detach().numpy()
+                    if 'object_level' in metric_fn.__name__:
+                        metric_value, preds, gts, raw_preds = metric_fn(y_pred, y, inst_seg)
+                        if add_preds_once == 0:
+                            pred+=preds
+                            gt+=gts
+                            raw_pred+=raw_preds
+                            add_preds_once = 1
+                    else:
+                        if self.loss.mode == 'multiclass':
+                            y_pred = y_pred[:, :2,...]
+                            y = y[:, :2,...]
+
+                        metric_value = metric_fn(y_pred, y).cpu().detach().numpy()
                     metrics_meters[metric_fn.__name__].add(metric_value)
+                
                 metrics_logs = {k: v.mean for k, v in metrics_meters.items()}
                 logs.update(metrics_logs)
-
                 if self.verbose:
                     s = self._format_logs(logs)
                     iterator.set_postfix_str(s)
 
-        return logs
+        return logs, np.array(pred), np.array(gt), np.array(raw_pred)
+    
 
 
 class TrainEpoch(Epoch):
@@ -224,7 +239,7 @@ class VizEpoch(Epoch):
         ) as iterator:
             for j in iterator:
                 if j % self.args.image_save_freq == 0:
-                    image, gt_mask, mask = dataset[j]
+                    image, gt_mask, mask, _ = dataset[j]
                     frame_num = dataset.index_mapping[j]
                     try:
                         rgb_image = Image.open(dataset.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')

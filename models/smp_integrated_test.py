@@ -16,6 +16,7 @@ import wandb
 sys.path.insert(0, './models/')
 from custom_train import ValidEpoch, TrainEpoch, VizEpoch
 from dice_loss import DiceLoss   
+from custom_metrics import IoU, object_level_Accuracy
 
    
 def main(args):
@@ -137,18 +138,24 @@ def main(args):
         
     loss = DiceLoss(args.seg_mode, classes=[0, 1], log_loss=True,
                     from_logits=True, smooth=0.0,
-                    ignore_index=None, eps=1e-7, class_weights=class_weights)
+                    ignore_index=None, eps=1e-7, class_weights=class_weights, DEVICE=DEVICE)
 
 
     # note: metric computations expect activated predictions
     # we do activations in the loss function, so custom_train implements it prior to metric computation
     metrics = [
-        smp_utils.metrics.IoU(threshold=0.5),
+        # smp_utils.metrics.IoU(threshold=0.5),
+        IoU(threshold=0.5),
+        object_level_Accuracy(threshold=0.5, remove_small_objects=args.remove_small_objects), 
     ]
 
     optimizer = torch.optim.Adam([ 
         dict(params=model.parameters(), lr=args.lr),
     ])
+
+    if args.resume_path != "":
+        model = torch.load(args.resume_path)
+        print("Model loaded from %s" % args.resume_path)
 
     # create epoch runners 
     # it is a simple loop of iterating over dataloader`s samples
@@ -191,15 +198,22 @@ def main(args):
     max_score = 0
 
     # initial visualization to make sure inputs are correct
-    train_viz_logs = train_visualization_epoch.run(train_data[0])
-    valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
+    if args.wandb:
+        train_viz_logs = train_visualization_epoch.run(train_data[0])
+        valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
+        for j, fig in enumerate(train_viz_logs):
+            wandb.log({"train_visualizations_{}".format('init'): fig})
+        for j, fig in enumerate(valid_viz_logs):
+            wandb.log({"val_visualizations_{}".format('init'): fig})
+
+    
 
     # train model
     for cur_epoch in range(0, args.num_epochs):
         
         print('\nEpoch: {}'.format(cur_epoch))
-        train_logs = train_epoch.run(train_loader)
-        valid_logs = valid_epoch.run(valid_loader)
+        train_logs, train_pred, train_gt, train_raw_pred = train_epoch.run(train_loader)
+        valid_logs, val_pred, val_gt, val_raw_pred = valid_epoch.run(valid_loader)
         
         if args.wandb:
             for k in train_logs:
@@ -211,7 +225,7 @@ def main(args):
                 # train_viz_idx = np.random.choice(range(len(train_data)), 1)
                 train_viz_idx = 0
                 val_viz_idx = 0
-                for idx in range(len(val_episodes)):
+                for idx in range(len(valid_data)):
                     train_viz_logs = train_visualization_epoch.run(train_data[idx])
                     valid_viz_logs = valid_visualization_epoch.run(valid_data[idx])
 
@@ -219,20 +233,28 @@ def main(args):
                         wandb.log({"train_visualizations_{}".format(cur_epoch): fig})
                     for j, fig in enumerate(valid_viz_logs):
                         wandb.log({"val_visualizations_{}".format(cur_epoch): fig})
+            
+            
+            if 'object_level_accuracy' in valid_logs:
+                np.save(wandb.run.dir + '/best_val_preds.npy', val_pred)
+                np.save(wandb.run.dir + '/best_val_gt.npy', val_gt) 
+                np.save(wandb.run.dir + '/best_val_raw_preds.npy', val_raw_pred) 
 
 
         # do something (save model, change lr, etc.)
-        if max_score < valid_logs['iou_score']:
-            max_score = valid_logs['iou_score']
-            if args.wandb:
-                torch.save(model,
-                    os.path.join(wandb.run.dir, './best_model_%s.pth' 
-                    % wandb_run_name))
-            else:
-                torch.save(model, 
-                    './best_model_%s.pth' 
-                    % wandb_run_name)
-            print('Model saved with val score %.4f! @ epoch %d' % (max_score, cur_epoch))
+            
+        
+        # if max_score < valid_logs['iou_score']:
+        #     max_score = valid_logs['iou_score']
+        #     if args.wandb:
+        #         torch.save(model,
+        #             os.path.join(wandb.run.dir, './best_model_%s.pth' 
+        #             % wandb_run_name))                
+        #     else:
+        #         torch.save(model, 
+        #             './best_model_%s.pth' 
+        #             % wandb_run_name)
+        #     print('Model saved with val score %.4f! @ epoch %d' % (max_score, cur_epoch))
 
             
         if cur_epoch > 0 and cur_epoch % args.lr_decay_epochstep == 0:
@@ -279,6 +301,10 @@ if __name__ == "__main__":
     args.add_argument("--bg-classwt", type=float, default=1e-5)
     args.add_argument("--aware-threshold", type=float, default=0.5)
     args.add_argument("--unaware-threshold", type=float, default=0.5)
+    args.add_argument("--remove-small-objects", action='store_true')
+    args.add_argument("--synthetic-gaze", action='store_true')
+    args.add_argument("--gaze-points-per-frame", type=int, default=25)
+
 
 
     # training params
@@ -287,12 +313,13 @@ if __name__ == "__main__":
     args.add_argument("--num-workers", type=int, default=12)
     args.add_argument("--batch-size", type=int, default=16)
     args.add_argument("--num-val-episodes", type=int, default=5)
-    args.add_argument("--num-epochs", type=int, default=40)
+    args.add_argument("--num-epochs", type=int, default=20)
     args.add_argument("--lr", type=float, default=0.0001)
     args.add_argument("--wandb", action='store_false')
     args.add_argument("--dont-log-images", action='store_true')
     args.add_argument("--image-save-freq", type=int, default=150)
-    args.add_argument("--unfix-valset", action='store_true')
+    args.add_argument("--unfix-valset", action='store_true')    
+    args.add_argument("--resume-path", type=str, default="")
     
     args.add_argument("--run-name", type=str, default="")    
     args = args.parse_args()
