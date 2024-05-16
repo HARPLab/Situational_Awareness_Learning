@@ -193,6 +193,7 @@ def main(args):
     max_score = 0
 
     # initial visualization to make sure inputs are correct
+    print("Initial visualization")
     train_viz_logs = train_visualization_epoch.run(train_data[0])
     valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
     

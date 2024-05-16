@@ -63,6 +63,8 @@ class Epoch:
                 #     np.save('model_inputs_viz/'+ self.stage_name + '_mask_{}.npy'.format(i), mask.cpu().detach().numpy())
                 # i+=1
                 loss, y_pred = self.batch_update(x, y, mask, x_left, y_left, mask_left, x_right, y_right, mask_right)
+                # need to unstack predictions
+                y_pred = torch.split(y_pred, x.shape[0], dim=0)[0]
 
                 # update loss logs
                 loss_value = loss.cpu().detach().numpy()
@@ -121,18 +123,23 @@ class TrainEpoch(Epoch):
 
     def batch_update(self, x, y, mask, x_left, y_left, mask_left, x_right, y_right, mask_right):
         self.optimizer.zero_grad()
-        prediction = self.model.forward(x)
-        prediction_left = self.model.forward(x_left)
-        prediction_right = self.model.forward(x_right)
+        # prediction = self.model.forward(x)
+        # prediction_left = self.model.forward(x_left)
+        # prediction_right = self.model.forward(x_right)
+        x_stacked = torch.cat((x, x_left, x_right), dim=0)
+        y_stacked = torch.cat((y, y_left, y_right), dim=0)
+        mask_stacked = torch.cat((mask, mask_left, mask_right), dim=0)
         #prediction is the aggregation of the three predictions
         #UNSURE ABOUT THIS PART
-        prediction_agg  = prediction + prediction_left + prediction_right
+        # prediction_agg  = prediction + prediction_left + prediction_right
+        prediction_agg = self.model.forward(x_stacked)
         # if self.loss.mode == 'multiclass':
-        loss = self.loss(prediction, y, mask)
-        loss_left = self.loss(prediction_left, y_left, mask_left)
-        loss_right = self.loss(prediction_right, y_right, mask_right)
+        # loss = self.loss(prediction, y, mask)
+        # loss_left = self.loss(prediction_left, y_left, mask_left)
+        # loss_right = self.loss(prediction_right, y_right, mask_right)
 
-        loss_agg = loss + loss_left + loss_right
+        # loss_agg = loss + loss_left + loss_right
+        loss_agg = self.loss(prediction_agg, y_stacked, mask_stacked)
         # else:
         #     loss = self.loss(prediction*mask, y*mask)
         loss_agg.backward()
@@ -156,18 +163,28 @@ class ValidEpoch(Epoch):
 
     def batch_update(self, x, y, mask, x_left, y_left, mask_left, x_right, y_right, mask_right):
         with torch.no_grad():
-            prediction = self.model.forward(x)
-            prediction_left = self.model.forward(x_left)
-            prediction_right = self.model.forward(x_right)
+            #stack the three inputs along batch dimension and pass into forward
+            x_stacked = torch.cat((x, x_left, x_right), dim=0)
+            y_stacked = torch.cat((y, y_left, y_right), dim=0)
+            mask_stacked = torch.cat((mask, mask_left, mask_right), dim=0)
+
+            prediction_agg = self.model.forward(x_stacked)
+            # prediction = self.model.forward(x)
+            # prediction_left = self.model.forward(x_left)
+            # prediction_right = self.model.forward(x_right)
+
             #prediction is the aggregation of the three predictions
             #UNSURE ABOUT THIS PART
-            prediction_agg  = prediction + prediction_left + prediction_right
-            # if self.loss.mode == 'multiclass':
-            loss = self.loss(prediction, y, mask)
-            loss_left = self.loss(prediction_left, y_left, mask_left)
-            loss_right = self.loss(prediction_right, y_right, mask_right)
+            #prediction_agg  = prediction + prediction_left + prediction_right
 
-            loss_agg = loss + loss_left + loss_right
+            loss_agg = self.loss(prediction_agg, y_stacked, mask_stacked)
+
+            # if self.loss.mode == 'multiclass':
+            # loss = self.loss(prediction, y, mask)
+            # loss_left = self.loss(prediction_left, y_left, mask_left)
+            # loss_right = self.loss(prediction_right, y_right, mask_right)
+
+            # loss_agg = loss + loss_left + loss_right
             # else:
             #     loss = self.loss(prediction*mask, y*mask)
         return loss_agg, prediction_agg
@@ -239,7 +256,6 @@ class VizEpoch(Epoch):
             for j in iterator:
                 if j % self.args.image_save_freq == 0:
                     image, gt_mask, mask, image_left, gt_mask_left, mask_left, image_right, gt_mask_right, mask_right = dataset[j]
-                    print(image.shape)
                     frame_num = dataset.index_mapping[j]
                     try:
                         rgb_image = Image.open(dataset.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
@@ -285,6 +301,12 @@ class VizEpoch(Epoch):
                         im1_right = Image.fromarray(np.uint8(mask_right.numpy()[0]*255)) 
                         im2_right = Image.fromarray(np.uint8(image_right.numpy()[2]*255))
                     
+                    images_stacked = torch.cat((image, image_left, image_right), dim=0)
+                    #print("Stacked", images_stacked.shape)
+                    #print(image.shape)
+                    #pr_mask_stacked = self.model.predict(images_stacked.to(self.device)).unsqueeze(0)
+                    
+                    #pr_mask, pr_mask_left, pr_mask_right = torch.split(pr_mask_stacked, image.shape[0], dim=0)
                     pr_mask = self.model.predict(image.to(self.device).unsqueeze(0))
                     pr_mask_left = self.model.predict(image_left.to(self.device).unsqueeze(0))
                     pr_mask_right= self.model.predict(image_right.to(self.device).unsqueeze(0))
