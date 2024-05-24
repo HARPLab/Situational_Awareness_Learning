@@ -18,6 +18,47 @@ from custom_train import ValidEpoch, TrainEpoch, VizEpoch
 from dice_loss import DiceLoss   
 from custom_metrics import IoU, object_level_Accuracy
 
+import albumentations as albu
+
+def get_training_augmentation():
+    train_transform = [
+
+        albu.HorizontalFlip(p=0.5),
+
+        # albu.ShiftScaleRotate(scale_limit=0.5, rotate_limit=0, shift_limit=0.1, p=1, border_mode=0),
+
+        # albu.RandomCrop(height=320, width=320, always_apply=True),
+
+        # albu.GaussNoise(p=0.2),
+        # albu.Perspective(p=0.5),
+
+        # albu.OneOf(
+        #     [
+        #         albu.CLAHE(p=1),
+        #         albu.RandomBrightnessContrast(p=1),
+        #         albu.RandomGamma(p=1),
+        #     ],
+        #     p=0.9,
+        # ),
+
+        # albu.OneOf(
+        #     [
+        #         albu.IAASharpen(p=1),
+        #         albu.Blur(blur_limit=3, p=1),
+        #         albu.MotionBlur(blur_limit=3, p=1),
+        #     ],
+        #     p=0.9,
+        # ),
+
+        # albu.OneOf(
+        #     [
+        #         albu.RandomBrightnessContrast(p=1),
+        #         albu.HueSaturationValue(p=1),
+        #     ],
+        #     p=0.9,
+        # ),
+    ]
+    return albu.Compose(train_transform)
    
 def main(args):
     ENCODER = args.encoder
@@ -98,13 +139,13 @@ def main(args):
 
 
     #region: Load data
-    train_data = []
-    concat_sample_weights = []
-    for ep in train_episodes:
-        dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args)
-        train_data.append(dataset)
-        concat_sample_weights += dataset.get_sample_weights()
-    train_dataset = torch.utils.data.ConcatDataset(train_data)
+    # train_data = []
+    # concat_sample_weights = []
+    # for ep in train_episodes:
+    #     dataset = SituationalAwarenessDataset(args.raw_data, args.sensor_config_file, ep, args) #, augmentations=get_training_augmentation())
+    #     train_data.append(dataset)
+    #     concat_sample_weights += dataset.get_sample_weights()
+    # train_dataset = torch.utils.data.ConcatDataset(train_data)
 
 
     valid_data = []
@@ -115,13 +156,13 @@ def main(args):
         concat_val_sample_weights += dataset.get_sample_weights()
     valid_dataset = torch.utils.data.ConcatDataset(valid_data)
 
-    if args.weighted_unaware_sampling:
-        weighted_sampler = WeightedRandomSampler(weights=concat_sample_weights,
-                                                num_samples=len(train_dataset),
-                                                replacement=True)
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
+    # if args.weighted_unaware_sampling:
+    #     weighted_sampler = WeightedRandomSampler(weights=concat_sample_weights,
+    #                                             num_samples=len(train_dataset),
+    #                                             replacement=True)
+    #     train_loader = DataLoader(train_dataset, batch_size=train_batch_size, sampler=weighted_sampler, num_workers=args.num_workers)
+    # else:
+    #     train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True, num_workers=args.num_workers)
         
     valid_loader = DataLoader(valid_dataset, batch_size=train_batch_size, shuffle=False, num_workers=args.num_workers)
     #endregion
@@ -145,7 +186,7 @@ def main(args):
     # we do activations in the loss function, so custom_train implements it prior to metric computation
     metrics = [
         # smp_utils.metrics.IoU(threshold=0.5),
-        IoU(threshold=0.5),
+        # IoU(threshold=0.5),
         object_level_Accuracy(threshold=0.5, remove_small_objects=args.remove_small_objects), 
     ]
 
@@ -198,13 +239,13 @@ def main(args):
     max_score = 0
 
     # initial visualization to make sure inputs are correct
-    if args.wandb:
-        train_viz_logs = train_visualization_epoch.run(train_data[0])
-        valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
-        for j, fig in enumerate(train_viz_logs):
-            wandb.log({"train_visualizations_{}".format('init'): fig})
-        for j, fig in enumerate(valid_viz_logs):
-            wandb.log({"val_visualizations_{}".format('init'): fig})
+    # if args.wandb:
+    #     train_viz_logs = train_visualization_epoch.run(train_data[0])
+    #     valid_viz_logs = valid_visualization_epoch.run(valid_data[0])
+    #     for j, fig in enumerate(train_viz_logs):
+    #         wandb.log({"train_visualizations_{}".format('init'): fig})
+    #     for j, fig in enumerate(valid_viz_logs):
+    #         wandb.log({"val_visualizations_{}".format('init'): fig})
 
     
 
@@ -212,40 +253,41 @@ def main(args):
     for cur_epoch in range(0, args.num_epochs):
         
         print('\nEpoch: {}'.format(cur_epoch))
-        train_logs, train_pred, train_gt, train_raw_pred = train_epoch.run(train_loader)
+        # train_logs, train_pred, train_gt, train_raw_pred = train_epoch.run(train_loader)
         valid_logs, val_pred, val_gt, val_raw_pred = valid_epoch.run(valid_loader)
         
         if args.wandb:
-            for k in train_logs:
-                wandb.log({"train_"+k: train_logs[k]})
-            for k in valid_logs:
-                wandb.log({"valid_"+k: valid_logs[k]})
+            # for k in train_logs:
+            #     wandb.log({"train_"+k: train_logs[k]})
+            # for k in valid_logs:
+            #     wandb.log({"valid_"+k: valid_logs[k]})
             
-            if not args.dont_log_images:
-                # train_viz_idx = np.random.choice(range(len(train_data)), 1)
-                train_viz_idx = 0
-                val_viz_idx = 0
-                for idx in range(len(valid_data)):
-                    train_viz_logs = train_visualization_epoch.run(train_data[idx])
-                    valid_viz_logs = valid_visualization_epoch.run(valid_data[idx])
+            # if not args.dont_log_images:
+            #     # train_viz_idx = np.random.choice(range(len(train_data)), 1)
+            #     train_viz_idx = 0
+            #     val_viz_idx = 0
+            #     for idx in range(len(valid_data)):
+            #         train_viz_logs = train_visualization_epoch.run(train_data[idx])
+            #         valid_viz_logs = valid_visualization_epoch.run(valid_data[idx])
 
-                    for j, fig in enumerate(train_viz_logs):
-                        wandb.log({"train_visualizations_{}".format(cur_epoch): fig})
-                    for j, fig in enumerate(valid_viz_logs):
-                        wandb.log({"val_visualizations_{}".format(cur_epoch): fig})
+            #         for j, fig in enumerate(train_viz_logs):
+            #             wandb.log({"train_visualizations_{}".format(cur_epoch): fig})
+            #         for j, fig in enumerate(valid_viz_logs):
+            #             wandb.log({"val_visualizations_{}".format(cur_epoch): fig})
             
             
             if 'object_level_accuracy' in valid_logs:
+                print(val_raw_pred[0])
+                print(len(val_raw_pred))
                 np.save(wandb.run.dir + '/best_val_preds.npy', val_pred)
                 np.save(wandb.run.dir + '/best_val_gt.npy', val_gt) 
                 np.save(wandb.run.dir + '/best_val_raw_preds.npy', val_raw_pred) 
 
 
         # do something (save model, change lr, etc.)
-            
-        
-        # if max_score < valid_logs['iou_score']:
-        #     max_score = valid_logs['iou_score']
+                    
+        # if max_score < valid_logs['object_level_accuracy']:
+        #     max_score = valid_logs['object_level_accuracy']
         #     if args.wandb:
         #         torch.save(model,
         #             os.path.join(wandb.run.dir, './best_model_%s.pth' 
@@ -257,9 +299,9 @@ def main(args):
         #     print('Model saved with val score %.4f! @ epoch %d' % (max_score, cur_epoch))
 
             
-        if cur_epoch > 0 and cur_epoch % args.lr_decay_epochstep == 0:
-            optimizer.param_groups[0]['lr'] /= 10
-            print('Decimating decoder learning rate to %f' % optimizer.param_groups[0]['lr'])
+        # if cur_epoch > 0 and cur_epoch % args.lr_decay_epochstep == 0:
+        #     optimizer.param_groups[0]['lr'] /= 10
+        #     print('Decimating decoder learning rate to %f' % optimizer.param_groups[0]['lr'])
 
     if args.wandb:
         wandb.finish()

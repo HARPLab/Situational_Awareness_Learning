@@ -111,7 +111,6 @@ class Epoch:
                 if self.verbose:
                     s = self._format_logs(logs)
                     iterator.set_postfix_str(s)
-
         return logs, np.array(pred), np.array(gt), np.array(raw_pred)
     
 
@@ -214,6 +213,140 @@ def viz_inputs_with_gaze_overlaid(img_inputs, rgb, gt, pr):
     return im
 
 
+class Classical_Baseline_VizEpoch():
+    def __init__(self, model, metrics, device="cpu", verbose=True, args=None):
+        self.model = model
+        self.metrics = metrics
+        self.stage_name = "Baseline Viz"
+        self.verbose = verbose
+        self.device = device
+        self.args = args
+
+
+    def _format_logs(self, logs):
+        str_logs = ["{} - {:.4}".format(k, v) for k, v in logs.items()]
+        s = ", ".join(str_logs)
+        return s
+
+    def run(self, dataset):
+        figs = []
+        with tqdm(
+            range(len(dataset)),
+            desc=self.stage_name,
+            file=sys.stdout,
+            disable=not (self.verbose),
+        ) as iterator:
+            for j in iterator:
+                if j % self.args.image_save_freq == 0:
+                    image, gt_mask, mask, _ = dataset[j]
+                    frame_num = dataset.index_mapping[j]
+                    try:
+                        rgb_image = Image.open(dataset.images_dir / 'rgb_output' / ('%.6d.png' % frame_num)).convert('RGB')
+                    except:
+                        print(dataset.images_dir / 'rgb_output' / ('%.6d.png' % frame_num))
+                        continue
+                    
+                    
+                    if self.args.instseg_channels == 1:
+                        im0 = Image.fromarray(np.uint8(image.numpy()[0]*255)) 
+                        im1 = Image.fromarray(np.uint8(mask.numpy()[0]*255))
+                        im2 = Image.fromarray(np.uint8(image.numpy()[1]*255))
+                    else:
+                        im0 = Image.fromarray(np.uint8(image.numpy()[1]*255)) # take G channel instead of R for input segmentation
+                        im1 = Image.fromarray(np.uint8(mask.numpy()[0]*255)) 
+                        im2 = Image.fromarray(np.uint8(image.numpy()[2]*255))
+                    
+                    pr_mask = self.model.forward(image.to(self.device).unsqueeze(0))
+                    if self.args.seg_mode == 'multiclass':
+                        gt_mask = gt_mask.squeeze()
+                        gt_fin = np.zeros([gt_mask.shape[0], gt_mask.shape[1], 3])
+                        gt_fin[gt_mask == 0] = np.array([0, 255, 0])
+                        gt_fin[gt_mask == 1] = np.array([255, 0, 0])
+                        gt_fin[gt_mask == 2] = np.array([0, 0, 0])                                        
+                        
+                        
+                    gt_im = Image.fromarray(np.uint8(gt_fin))
+                    # gt_im.save(args.viz_output_path + "/gt_train_mask_" + str(j) + "_" + str(i) + ".png")
+                    pr_im = Image.fromarray(np.uint8(pr_mask.squeeze().cpu().detach().numpy().round() * 255))
+                    # pr_im = Image.fromarray(np.uint8(mask))
+                    # pr_im.save(args.viz_output_path + "/pr_train_mask_" + str(j) + "_" + str(i) + ".png")
+                    
+                    # becomes mask
+                    figs.append(viz_inputs_with_gaze_overlaid([im0, im1, im2], rgb_image, gt_im, pr_im))
+                    if self.verbose:
+                        s = str(j) + ", " + str(len(iterator))
+                        iterator.set_postfix_str(s)
+
+        return figs
+    
+class Classical_Baseline_Epoch():
+    def __init__(self, model, metrics, device="cpu", verbose=True):
+        self.model = model
+        self.metrics = metrics
+        self.stage_name = "Baseline valid"
+        self.verbose = verbose
+        self.device = device
+
+        super().__init__()
+
+    def batch_update(self, x):
+        with torch.no_grad():
+            return self.model.forward(x)        
+
+    def _to_device(self):
+        self.model.to(self.device)
+        self.loss.to(self.device)
+        for metric in self.metrics:
+            metric.to(self.device)
+
+    def _format_logs(self, logs):
+        str_logs = ["{} - {:.4}".format(k, v) for k, v in logs.items()]
+        s = ", ".join(str_logs)
+        return s
+
+    def run(self, dataloader):
+
+
+        logs = {}
+        metrics_meters = {metric.__name__: smp_utils.meter.AverageValueMeter() for metric in self.metrics}
+        pred = []
+        gt = []
+        with tqdm(
+            dataloader,
+            desc=self.stage_name,
+            file=sys.stdout,
+            disable=not (self.verbose),
+        ) as iterator:
+            i = 0
+            for x, y, mask, inst_seg in iterator:
+                x, y, mask = x.to(self.device), y.to(self.device), mask.to(self.device)
+                # if i % 10 == 0:
+                #     np.save('model_inputs_viz/'+ self.stage_name + '_x_{}.npy'.format(i), x.cpu().detach().numpy())
+                #     np.save('model_inputs_viz/'+ self.stage_name + '_mask_{}.npy'.format(i), mask.cpu().detach().numpy())
+                # i+=1
+                y_pred = self.batch_update(x).unsqueeze(1)
+                y_pred *= mask 
+                y = F.one_hot(y.view(y.shape[0], y.shape[2], y.shape[3]), num_classes=3).permute(0, 3, 1, 2).float()
+                y *= mask
+                add_preds_once = 0
+                # update metrics logs
+                for metric_fn in self.metrics:
+                    if 'object_level' in metric_fn.__name__:
+                        metric_value, preds, gts = metric_fn(y_pred, y, inst_seg)
+                        if add_preds_once == 0:
+                            pred+=preds
+                            gt+=gts
+                            add_preds_once = 1
+                    metrics_meters[metric_fn.__name__].add(metric_value)
+                
+                metrics_logs = {k: v.mean for k, v in metrics_meters.items()}
+                logs.update(metrics_logs)
+                if self.verbose:
+                    s = self._format_logs(logs)
+                    iterator.set_postfix_str(s)
+
+        return logs, np.array(pred), np.array(gt)
+    
 class VizEpoch(Epoch):
     def __init__(self, model, loss, metrics, device="cpu", verbose=True, args=None):
         self.args = args

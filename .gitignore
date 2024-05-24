@@ -5,6 +5,7 @@
 *.pth
 *.npy
 wandb/
+ibmmpy/
 
 # Byte-compiled / optimized / DLL files
 __pycache__*

@@ -46,10 +46,10 @@ class object_level_Accuracy(base.Metric):
                 # print(id, obj_pr, obj_gt)
                 accs.append(obj_pr == obj_gt)
                 preds.append(obj_pr)
-                raw_preds.append(y_pr_raw[:, :2, ...][b][obj_pr][inds][obj_pr_ind].item())
+                raw_preds.append((y_pr_raw[:, :2, ...][b][1][inds] - y_pr_raw[:, :2, ...][b][0][inds]).cpu().detach().numpy())
                 gts.append(obj_gt)
         if len(accs) == 0:
-            return 0, preds, gts
+            return 0, preds, gts, raw_preds
         return sum(accs)/len(accs), preds, gts, raw_preds
     
 class object_level_Precision(base.Metric):
@@ -186,3 +186,46 @@ class IoU(base.Metric):
             threshold=self.threshold,
             ignore_channels=self.ignore_channels,
         )
+    
+class gaze_intersection_object_level_accuracy(base.Metric):
+    __name__ = "gaze_intersection_object_level_accuracy"
+
+    def __init__(self, threshold=0.5, remove_small_objects = True, activation=None, ignore_channels=None, **kwargs):
+        super().__init__(**kwargs)
+        self.__name__ = "object_level_accuracy"
+        self.remove_small_objects = remove_small_objects
+
+    def forward(self, y_pr_raw, y_gt, y_inst):
+        
+        # get object_ids 
+        # get_mask for each vehicle id
+        # get prediction for each object
+        # calculate accuracy 
+        y_gt = torch.argmax(y_gt, dim=1)
+        # allowed_inds = y_inst[:, 0, :, :] == 10 or y_inst[:, 0, :, :] == 4 or y_inst[:, 0, :, :] == 23
+        ids_tensor = y_inst[:, 1, :, :] + y_inst[:, 2, :, :]*256
+        accs = []
+        preds = []
+        raw_preds = []
+        gts = []
+        for b in range(ids_tensor.shape[0]):
+            ids = ids_tensor[b].unique()
+            # print(ids)
+            for id in ids:
+                inds = ids_tensor[b] == id
+                if (self.remove_small_objects == True) and torch.sum(inds) < 10:
+                    continue
+                y_pr_obj = y_pr_raw[b][0][inds]
+                y_gt_obj = y_gt[b][inds]
+                val = torch.max(y_pr_obj)
+                obj_pr = 1 - val.item() # aware objects are 1 in baseline prediction
+                obj_gt = torch.mode(y_gt_obj)[0].item()
+                if obj_gt == 2:
+                    continue
+                # obj_gt = y_gt_obj[0].item()
+                accs.append(obj_pr == obj_gt)
+                preds.append(obj_pr)
+                gts.append(obj_gt)
+        if len(accs) == 0:
+            return 0, preds, gts
+        return sum(accs)/len(accs), preds, gts

@@ -239,7 +239,7 @@ class SABalancedSampler(BatchSampler):
 
 class SituationalAwarenessDataset(Dataset):
     #def __init__(self, images_dir, awareness_df, sensor_config, secs_of_history = 5, sample_rate = 4.0, gaussian_sigma = 10.0):
-    def __init__(self, raw_data, sensor_config, episode, args):        
+    def __init__(self, raw_data, sensor_config, episode, args, augmentations=None):        
         self.raw_data_dir = Path(raw_data)
         self.episode = episode
         self.rgb_frame_delay = 3
@@ -416,6 +416,8 @@ class SituationalAwarenessDataset(Dataset):
         self.index_mapping = index_mapping
 
         self.sample_weights = self._calc_sample_weights()
+
+        self.augmentations = augmentations
 
         print("Class distribution for episode %s: %s" % (self.episode, class_distribution))
         print("Num frames with atleast 1 unaware: %d, fully aware: %d" % (len(self.obj_unaware_dict), len(self.obj_aware_dict)))
@@ -700,6 +702,21 @@ class SituationalAwarenessDataset(Dataset):
                                                         raw_gaze_left, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
                 gaze_heatmap_right = gaze_dot_plot(np.array(instance_seg_right_image), 
                                                         raw_gaze_right, sigma=self.gaussian_sigma, gaze_fade=self.args.gaze_fade)
+                
+        # before converting to tensors, do augmentations
+        if self.augmentations:
+            instance_seg_image = self.augmentations(instance_seg_image)
+
+            gaze_heatmap = self.augmentations(gaze_heatmap)
+
+            full_label_mask = self.augmentations(full_label_mask)
+            ignore_mask = self.augmentations(ignore_mask)
+
+            if self.use_rgb:
+                rgb_image = self.augmentations(rgb_image)
+
+            if self.middle_andsides:
+                raise NotImplementedError
         
         # Convert all images to tensors
         if self.use_rgb:
